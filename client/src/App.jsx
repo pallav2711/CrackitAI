@@ -21,6 +21,7 @@ import PaymentSuccess from './pages/PaymentSuccess';
 import PaymentFailed from './pages/PaymentFailed';
 import InterviewSetup from './pages/InterviewSetup';
 import VoiceInterviewSession from './pages/VoiceInterviewSession';
+import InterviewResults from './pages/InterviewResults';
 import Settings from './pages/Settings';
 import PrivacyPolicy from './pages/legal/PrivacyPolicy';
 import TermsOfService from './pages/legal/TermsOfService';
@@ -70,6 +71,7 @@ function App() {
         {/* Voice Interview */}
         <Route path="/interview/setup" element={<ProtectedRoute><InterviewSetup /></ProtectedRoute>} />
         <Route path="/interview/voice-session" element={<ProtectedRoute><VoiceInterviewSession /></ProtectedRoute>} />
+        <Route path="/interview-results/:id" element={<ProtectedRoute><InterviewResults /></ProtectedRoute>} />
 
         {/* Settings */}
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

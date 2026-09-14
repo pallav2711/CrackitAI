@@ -1,4 +1,5 @@
 import express from 'express';
+import multer from 'multer';
 import {
   createInterview,
   startInterview,
@@ -12,25 +13,31 @@ import {
 } from '../controllers/interviewController.js';
 import {
   startVoiceSession,
+  processTurn,
   endVoiceSession,
 } from '../controllers/voiceInterviewController.js';
 import { protect } from '../middleware/auth.js';
 import { aiCallLimit, interviewCreditLimit } from '../middleware/aiRateLimit.js';
-// requireSubscription: plan-level route guard
-// Voice interviews and text interviews require at least the free plan (effectively all authenticated users)
-// We apply requirePaid only where we want to gate specific paid features.
-// Currently, interview credit limits already enforce the free/paid distinction via PLAN_LIMITS.
-// requirePaid is reserved for future features that are purely paid (no free tier).
 
 const router = express.Router();
+
+// Multer — in-memory storage for audio blobs (max 10MB)
+const audioUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_, file, cb) => {
+    const allowed = ['audio/webm', 'audio/mp4', 'audio/wav', 'audio/ogg', 'audio/mpeg', 'video/webm'];
+    cb(null, allowed.includes(file.mimetype) || file.originalname?.match(/\.(webm|mp4|wav|ogg|mp3)$/i) ? true : false);
+  },
+});
 
 // All routes require authentication
 router.use(protect);
 
 // ── Voice interview routes ──────────────────────────────────────────────────
-// (credit check is inside the controller — it needs to roll back on Realtime failure)
 router.post('/voice/start', startVoiceSession);
-router.post('/voice/end', aiCallLimit, endVoiceSession);
+router.post('/voice/turn', audioUpload.single('audio'), aiCallLimit, processTurn);
+router.post('/voice/end', endVoiceSession);
 
 // ── Text interview routes ───────────────────────────────────────────────────
 // Create new interview — enforce monthly interview credit cap

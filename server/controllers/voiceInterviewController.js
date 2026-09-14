@@ -1,29 +1,29 @@
 /**
- * Voice Interview Controller
+ * Voice Interview Controller — Whisper STT + GPT-4o + TTS
  *
- * Integrates with OpenAI Realtime API (gpt-realtime-mini) for live voice interviews.
+ * Architecture (no Realtime API needed):
+ *   POST /voice/start  → create Interview doc, return interviewId + sessionCap
+ *   POST /voice/turn   → receive audio blob → Whisper STT → GPT-4o response → TTS audio
+ *   POST /voice/end    → submit full transcript → existing scoring pipeline (unchanged)
  *
- * Security model:
- *  - The OpenAI key NEVER reaches the client.
- *  - /voice/start returns a short-lived ephemeral session token from OpenAI's
- *    Realtime Sessions API. The client uses that token to open a WebRTC connection.
- *  - A hard server-side session cap (minutes) is enforced regardless of what the
- *    frontend requests — this is the cost ceiling.
- *  - Every session's audio minutes are logged for margin tracking.
- *
- * Endpoint summary:
- *   POST /api/interview/voice/start  → create session, return ephemeral token
- *   POST /api/interview/voice/end    → submit transcript, trigger scoring pipeline
+ * Each /voice/turn call:
+ *   1. Transcribe candidate audio with Whisper (speech-to-text)
+ *   2. Append to in-memory conversation history (stored server-side in a Map keyed by interviewId)
+ *   3. Get next interviewer response from GPT-4o
+ *   4. Convert response to speech via TTS
+ *   5. Return { transcript: string, response: string, audioBase64: string }
  */
 
 import OpenAI from 'openai';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import Interview from '../models/Interview.js';
-import { logVoiceSession } from '../services/aiCostLogger.js';
-import { checkInterviewCredit, PLAN_LIMITS } from '../middleware/aiRateLimit.js';
-import {
-  generateOverallFeedback,
-} from '../services/aiQuestionService.js';
+import { logChatCall, logVoiceSession } from '../services/aiCostLogger.js';
+import { checkInterviewCredit } from '../middleware/aiRateLimit.js';
+import { generateOverallFeedback } from '../services/aiQuestionService.js';
 
+// ── OpenAI client (lazy init) ─────────────────────────────────────────────────
 let openai = null;
 const getOpenAI = () => {
   if (!openai && process.env.OPENAI_API_KEY) {
@@ -32,41 +32,63 @@ const getOpenAI = () => {
   return openai;
 };
 
-// Session cap constants (plan-level caps enforced here too, belt-and-suspenders)
+// ── Session cap per plan (seconds) ────────────────────────────────────────────
 const SESSION_CAP_SECONDS = {
-  free: 7 * 60,
-  basic: 10 * 60,
-  pro: 15 * 60,
+  free:   7  * 60,
+  basic:  10 * 60,
+  pro:    15 * 60,
   annual: 15 * 60,
 };
 
-// Build the interviewer system prompt from interview setup params
-const buildInterviewerPrompt = ({ role, companyType, difficulty, mode }) => {
+// ── In-memory conversation store ──────────────────────────────────────────────
+// Key: interviewId (string), Value: { messages: [], startTime: Date, setup: {} }
+// Cleared on /voice/end or after 60 min TTL
+const sessions = new Map();
+
+// Cleanup stale sessions every 30 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  for (const [id, session] of sessions.entries()) {
+    if (session.startTime < cutoff) sessions.delete(id);
+  }
+}, 30 * 60 * 1000);
+
+// ── Build interviewer system prompt ──────────────────────────────────────────
+const buildSystemPrompt = ({ role, companyType, difficulty, interviewType }) => {
   const difficultyGuidance = {
-    easy: 'Ask straightforward questions. Be encouraging and give hints if the candidate seems stuck.',
-    medium: 'Ask moderately challenging questions. Follow up on answers to probe deeper.',
-    hard: 'Ask challenging questions with complex follow-ups. Push the candidate to think critically.',
+    easy:   'Ask straightforward, approachable questions. Be warm and encouraging. Give light hints if the candidate gets stuck.',
+    medium: 'Ask moderately challenging questions. Follow up naturally on answers to probe deeper understanding.',
+    hard:   'Ask challenging, multi-layered questions. Push the candidate to think critically and defend their reasoning.',
+  };
+  const typeContext = {
+    technical:  'Focus on technical skills: data structures, algorithms, system design, and coding concepts.',
+    hr:         'Focus on behavioral questions using the STAR method, culture fit, motivation, and career goals.',
+    behavioral: 'Focus on past experiences, soft skills, problem-solving approach, and teamwork.',
+    mixed:      'Mix technical questions with behavioral ones naturally, as a real interview would.',
   };
 
-  return `You are an experienced technical interviewer conducting a ${difficulty || 'medium'}-difficulty ${mode || 'technical'} interview for a ${role || 'Software Engineer'} position${companyType ? ` at a ${companyType} company` : ''}.
+  return `You are Alex, an experienced senior interviewer conducting a ${difficulty}-difficulty ${interviewType} interview for a ${role} position${companyType && companyType !== 'any' ? ` at a ${companyType} company` : ''}.
 
-YOUR ROLE:
-- Conduct a realistic, professional interview in a conversational but focused tone.
-- Ask one question at a time. Wait for the candidate to finish before proceeding.
-- Follow up on vague or incomplete answers with clarifying questions.
-- Take brief notes mentally — you will score the candidate at the end.
-- Keep the interview moving at a steady pace; don't let silences extend beyond 10 seconds.
+INTERVIEW STYLE:
+- Conversational, professional, and focused. One question at a time.
+- Listen carefully to each answer and follow up naturally before moving to the next question.
+- Keep responses concise — this is a spoken conversation, not a written document.
+- Do NOT use bullet points, numbered lists, or markdown in your responses.
+- Do NOT mention you are an AI. Stay in character as Alex throughout.
 
-DIFFICULTY GUIDANCE:
+INTERVIEW FOCUS:
+${typeContext[interviewType] || typeContext.technical}
+
+DIFFICULTY:
 ${difficultyGuidance[difficulty] || difficultyGuidance.medium}
 
-START:
-Begin by introducing yourself briefly (one sentence), then ask the candidate to introduce themselves. After their introduction, proceed to your first interview question.
-
-IMPORTANT:
-- Speak naturally as a human interviewer would. No bullet points or numbered lists in your speech.
-- Do not break character or mention that you are an AI.
-- Keep your questions and responses concise — this is a spoken conversation.`;
+FLOW:
+1. Introduce yourself briefly (one sentence: "Hi, I'm Alex and I'll be conducting your interview today.")
+2. Ask the candidate to introduce themselves.
+3. After their introduction, begin with your first interview question.
+4. Ask 5–8 questions total, following up on weak or vague answers.
+5. Keep each response under 60 words — short, clear, spoken English.
+6. End the interview naturally after sufficient questions by saying: "That's all the questions I have. Thank you for your time today."`;
 };
 
 // ─── POST /api/interview/voice/start ─────────────────────────────────────────
@@ -74,22 +96,20 @@ export const startVoiceSession = async (req, res) => {
   try {
     const { role, companyType, difficulty, durationMinutes, interviewType } = req.body;
 
-    const client = getOpenAI();
-    if (!client) {
+    if (!getOpenAI()) {
       return res.status(503).json({
         success: false,
         message: 'Voice interviews are not available right now. Please try again later.',
       });
     }
 
-    // Determine session cap based on plan
+    // Plan-based session cap
     const plan = req.user.subscription?.plan || 'free';
     const planCap = SESSION_CAP_SECONDS[plan] || SESSION_CAP_SECONDS.free;
-    // Respect user-requested duration but never exceed plan cap
     const requestedSeconds = durationMinutes ? Math.floor(durationMinutes) * 60 : planCap;
     const sessionCapSeconds = Math.min(requestedSeconds, planCap);
 
-    // Check interview credit (decrements the monthly counter)
+    // Check monthly interview credit
     const creditCheck = await checkInterviewCredit(req.user.id);
     if (!creditCheck.allowed) {
       return res.status(403).json({
@@ -99,7 +119,7 @@ export const startVoiceSession = async (req, res) => {
       });
     }
 
-    // Create an Interview doc to track this session
+    // Create Interview doc
     const interview = await Interview.create({
       userId: req.user.id,
       type: interviewType || 'technical',
@@ -108,86 +128,25 @@ export const startVoiceSession = async (req, res) => {
       mode: 'voice',
       status: 'in-progress',
       startTime: new Date(),
-      questions: [], // populated from transcript on end
+      questions: [],
     });
 
-    // Request an ephemeral session token from OpenAI Realtime API
-    // This token is short-lived (~1 min to connect, then session lives until cap)
-    const systemPrompt = buildInterviewerPrompt({
-      role,
-      companyType,
-      difficulty,
-      mode: interviewType || 'technical',
-    });
+    const interviewId = interview._id.toString();
 
-    let realtimeToken = null;
-    let realtimeSessionId = null;
-
-    try {
-      // OpenAI Realtime Sessions API — creates a short-lived client secret
-      const sessionResponse = await openai.beta.realtime.sessions.create({
-        model: 'gpt-4o-realtime-preview',
-        voice: 'alloy',
-        instructions: systemPrompt,
-        input_audio_transcription: { model: 'whisper-1' },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 800,
-        },
-      });
-
-      realtimeToken = sessionResponse.client_secret?.value;
-      realtimeSessionId = sessionResponse.id;
-    } catch (realtimeError) {
-      console.error('[voice] Realtime session creation failed:', realtimeError.message);
-      console.error('[voice] Realtime error status:', realtimeError.status);
-      console.error('[voice] Realtime error full:', JSON.stringify(realtimeError, null, 2));
-
-      // Roll back the interview doc so it doesn't count against their credit
-      await Interview.findByIdAndDelete(interview._id);
-      const User = (await import('../models/User.js')).default;
-      await User.findByIdAndUpdate(req.user.id, {
-        $inc: { 'usage.interviewsUsedThisCycle': -1 },
-      });
-
-      // Map OpenAI error codes to helpful messages
-      let userMessage = 'Could not start voice session. Please try again.';
-      if (realtimeError.status === 401) {
-        userMessage = 'OpenAI authentication failed. Please contact support.';
-      } else if (realtimeError.status === 429) {
-        userMessage = 'AI service is busy. Please wait a moment and try again.';
-      } else if (realtimeError.status === 404) {
-        userMessage = 'Voice interview model not available. Please contact support.';
-      } else if (realtimeError.message?.includes('realtime')) {
-        userMessage = 'Realtime API not accessible. Your OpenAI plan may not include Realtime access.';
-      }
-
-      return res.status(503).json({
-        success: false,
-        message: userMessage,
-        // Always include error detail so you can debug from the client console
-        error: realtimeError.message,
-        errorStatus: realtimeError.status,
-      });
-    }
-
-    // Persist the Realtime session ID so /end can reference it
-    await Interview.findByIdAndUpdate(interview._id, {
-      'aiModel': 'gpt-4o-realtime-preview',
-      // Store session metadata in a generic field
-      'overallFeedback': JSON.stringify({ realtimeSessionId, sessionCapSeconds }),
+    // Initialize server-side session with system prompt
+    const systemPrompt = buildSystemPrompt({ role, companyType, difficulty, interviewType });
+    sessions.set(interviewId, {
+      messages: [{ role: 'system', content: systemPrompt }],
+      startTime: Date.now(),
+      setup: { role, companyType, difficulty, interviewType },
+      transcript: [], // [{role:'user'|'assistant', content:'...'}]
     });
 
     res.json({
       success: true,
-      interviewId: interview._id,
+      interviewId,
       sessionCapSeconds,
       remainingInterviews: creditCheck.remaining,
-      // The ephemeral client secret — frontend uses this to open WebRTC
-      realtimeToken,
-      realtimeSessionId,
     });
   } catch (err) {
     console.error('[voice] startVoiceSession error:', err);
@@ -195,20 +154,133 @@ export const startVoiceSession = async (req, res) => {
   }
 };
 
+// ─── POST /api/interview/voice/turn ──────────────────────────────────────────
+// Body: multipart/form-data with:
+//   audio: audio file blob (webm/mp4/wav)
+//   interviewId: string
+export const processTurn = async (req, res) => {
+  let tempFilePath = null;
+  try {
+    const { interviewId } = req.body;
+    const audioFile = req.file;
+
+    if (!interviewId || !audioFile) {
+      return res.status(400).json({ success: false, message: 'Missing interviewId or audio.' });
+    }
+
+    const session = sessions.get(interviewId);
+    if (!session) {
+      return res.status(404).json({ success: false, message: 'Session not found or expired.' });
+    }
+
+    const client = getOpenAI();
+
+    // ── 1. Whisper STT ───────────────────────────────────────────────────────
+    // Write buffer to a temp file (Whisper needs a file stream)
+    const ext = audioFile.mimetype?.includes('mp4') ? 'mp4'
+               : audioFile.mimetype?.includes('wav') ? 'wav'
+               : 'webm';
+    tempFilePath = path.join(os.tmpdir(), `voice_${Date.now()}.${ext}`);
+    fs.writeFileSync(tempFilePath, audioFile.buffer);
+
+    let userText = '';
+    try {
+      const transcription = await client.audio.transcriptions.create({
+        file: fs.createReadStream(tempFilePath),
+        model: 'whisper-1',
+        language: 'en',
+        response_format: 'text',
+      });
+      userText = (typeof transcription === 'string' ? transcription : transcription.text || '').trim();
+    } catch (sttErr) {
+      console.error('[voice] Whisper STT error:', sttErr.message);
+      return res.status(502).json({ success: false, message: 'Could not transcribe audio. Please speak clearly and try again.' });
+    } finally {
+      // Clean up temp file
+      if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      tempFilePath = null;
+    }
+
+    // Ignore very short / empty transcriptions (background noise, silence)
+    if (!userText || userText.split(/\s+/).length < 2) {
+      return res.json({ success: true, transcript: '', response: '', audioBase64: null, skipped: true });
+    }
+
+    // ── 2. Add user turn to conversation ────────────────────────────────────
+    session.messages.push({ role: 'user', content: userText });
+    session.transcript.push({ role: 'user', content: userText });
+
+    // ── 3. GPT-4o interviewer response ───────────────────────────────────────
+    let aiText = '';
+    try {
+      const chatRes = await client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: session.messages,
+        temperature: 0.7,
+        max_tokens: 200, // Keep responses short — spoken word
+      });
+      aiText = chatRes.choices[0].message.content?.trim() || '';
+
+      // Log cost
+      logChatCall({
+        userId: req.user.id,
+        feature: 'answer-evaluation',
+        model: 'gpt-4o-mini',
+        usage: chatRes.usage,
+        refId: interviewId,
+        refModel: 'Interview',
+      });
+    } catch (chatErr) {
+      console.error('[voice] GPT-4o error:', chatErr.message);
+      return res.status(502).json({ success: false, message: 'AI response failed. Please try again.' });
+    }
+
+    // Add assistant turn to conversation
+    session.messages.push({ role: 'assistant', content: aiText });
+    session.transcript.push({ role: 'assistant', content: aiText });
+
+    // ── 4. TTS — convert AI text to speech ───────────────────────────────────
+    let audioBase64 = null;
+    try {
+      const ttsRes = await client.audio.speech.create({
+        model: 'tts-1',       // tts-1 is fast; tts-1-hd for higher quality
+        voice: 'alloy',       // alloy = neutral professional voice
+        input: aiText,
+        response_format: 'mp3',
+        speed: 1.0,
+      });
+      const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+      audioBase64 = audioBuffer.toString('base64');
+    } catch (ttsErr) {
+      console.error('[voice] TTS error:', ttsErr.message);
+      // TTS failure is non-fatal — client can display text even without audio
+    }
+
+    // ── 5. Detect if interview ended ─────────────────────────────────────────
+    const interviewEnded = aiText.toLowerCase().includes('thank you for your time') ||
+                           aiText.toLowerCase().includes("that's all the questions");
+
+    res.json({
+      success: true,
+      transcript: userText,       // what the user said
+      response: aiText,           // what the AI said
+      audioBase64,                // base64 mp3 to play in browser
+      audioMimeType: 'audio/mp3',
+      interviewEnded,
+    });
+  } catch (err) {
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try { fs.unlinkSync(tempFilePath); } catch (_) {}
+    }
+    console.error('[voice] processTurn error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // ─── POST /api/interview/voice/end ───────────────────────────────────────────
-/**
- * Called by the client when the voice session ends (user clicks "End" or cap fires).
- * Body: { interviewId, transcript: [{ role: 'user'|'assistant', content: '...' }], durationSeconds }
- *
- * This feeds the transcript through the existing text scoring pipeline:
- *   1. Extract candidate answers from transcript
- *   2. Evaluate each answer with the AI evaluator
- *   3. Generate overall feedback
- *   4. Award leaderboard points
- */
 export const endVoiceSession = async (req, res) => {
   try {
-    const { interviewId, transcript = [], durationSeconds = 0 } = req.body;
+    const { interviewId, durationSeconds = 0 } = req.body;
 
     const interview = await Interview.findOne({
       _id: interviewId,
@@ -223,40 +295,37 @@ export const endVoiceSession = async (req, res) => {
       });
     }
 
-    // ── Log voice session cost ──
-    const audioMinutes = durationSeconds / 60;
-    logVoiceSession({ userId: req.user.id, audioMinutes, refId: interview._id });
+    // Pull transcript from server-side session store
+    const session = sessions.get(interviewId);
+    const transcript = session?.transcript || req.body.transcript || [];
+    sessions.delete(interviewId); // clean up
 
-    // ── Extract Q&A pairs from transcript ──
-    // The transcript is [{role:'assistant', content:'...'}, {role:'user', content:'...'}, ...]
-    // We pair each assistant question with the following user answer.
+    // Log voice session cost
+    logVoiceSession({ userId: req.user.id, audioMinutes: durationSeconds / 60, refId: interview._id });
+
+    // Extract Q&A pairs from transcript
     const qaPairs = [];
     for (let i = 0; i < transcript.length - 1; i++) {
       if (transcript[i].role === 'assistant' && transcript[i + 1]?.role === 'user') {
         const question = transcript[i].content?.trim();
-        const answer = transcript[i + 1].content?.trim();
-        // Skip very short exchanges (greetings, transitions)
+        const answer   = transcript[i + 1].content?.trim();
         if (question && answer && answer.split(/\s+/).length >= 5) {
           qaPairs.push({ question, answer });
         }
       }
     }
 
-    // ── Anti-gaming: minimum duration threshold ──
-    // Sessions under 2 minutes or with fewer than 2 substantial answers don't earn
-    // leaderboard points (prevents spam-clicking for points).
+    // Anti-gaming: minimum duration + minimum answers
     const meetsMinimumThreshold = durationSeconds >= 120 && qaPairs.length >= 2;
 
-    // ── Evaluate each answer (reuse existing text evaluator) ──
-    // Import inline to avoid circular deps
+    // Evaluate each answer
     const { evaluateAnswerWithAI } = await import('../services/aiQuestionService.js');
 
     const evaluatedQuestions = await Promise.all(
       qaPairs.slice(0, 10).map(async ({ question, answer }) => {
         try {
           const evaluation = await evaluateAnswerWithAI({
-            question,
-            answer,
+            question, answer,
             type: interview.type,
             role: interview.role,
             expectedKeywords: [],
@@ -277,26 +346,16 @@ export const endVoiceSession = async (req, res) => {
           };
         } catch (evalErr) {
           console.error('[voice] Answer evaluation failed:', evalErr.message);
-          return {
-            question,
-            userAnswer: answer,
-            score: 0,
-            feedback: 'Evaluation unavailable.',
-            strengths: [],
-            improvements: [],
-            answeredAt: new Date(),
-          };
+          return { question, userAnswer: answer, score: 0, feedback: 'Evaluation unavailable.', strengths: [], improvements: [], answeredAt: new Date() };
         }
       })
     );
 
-    // ── Calculate overall score ──
+    // Overall score
     const totalScore = evaluatedQuestions.reduce((s, q) => s + (q.score || 0), 0);
-    const overallScore = evaluatedQuestions.length > 0
-      ? Math.round(totalScore / evaluatedQuestions.length)
-      : 0;
+    const overallScore = evaluatedQuestions.length > 0 ? Math.round(totalScore / evaluatedQuestions.length) : 0;
 
-    // ── Generate overall feedback ──
+    // Overall feedback
     let feedbackResult = null;
     try {
       feedbackResult = await generateOverallFeedback({
@@ -310,15 +369,14 @@ export const endVoiceSession = async (req, res) => {
       console.error('[voice] Overall feedback generation failed:', fbErr.message);
     }
 
-    // ── Award leaderboard points (voice-only, anti-gaming enforced) ──
+    // Points
     let pointsAwarded = 0;
     if (meetsMinimumThreshold) {
       const difficultyMultiplier = { easy: 1, medium: 1.5, hard: 2 }[interview.difficulty] || 1;
-      // Points = score * difficulty multiplier, capped at 200/session
       pointsAwarded = Math.min(Math.round(overallScore * difficultyMultiplier), 200);
     }
 
-    // ── Persist completed interview ──
+    // Persist
     interview.status = 'completed';
     interview.endTime = new Date();
     interview.actualDuration = durationSeconds;
@@ -330,10 +388,9 @@ export const endVoiceSession = async (req, res) => {
     interview.recommendations = feedbackResult?.recommendations || [];
     if (feedbackResult?.overallAssessment) interview.overallAssessment = feedbackResult.overallAssessment;
     if (feedbackResult?.nextSteps) interview.nextSteps = feedbackResult.nextSteps;
-
     await interview.save();
 
-    // ── Update user stats + leaderboard points ──
+    // Update user stats
     const User = (await import('../models/User.js')).default;
     await User.findByIdAndUpdate(req.user.id, {
       $inc: {
@@ -356,7 +413,6 @@ export const endVoiceSession = async (req, res) => {
       overallFeedback: feedbackResult?.feedback || '',
       strengths: feedbackResult?.strengths || [],
       improvements: feedbackResult?.improvements || [],
-      // Direct link to the full report
       reportUrl: `/interview-results/${interview._id}`,
     });
   } catch (err) {
