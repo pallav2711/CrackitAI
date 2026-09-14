@@ -136,25 +136,40 @@ export const startVoiceSession = async (req, res) => {
           prefix_padding_ms: 300,
           silence_duration_ms: 800,
         },
-        // Tool calling disabled for the interview — keep it conversational
       });
 
       realtimeToken = sessionResponse.client_secret?.value;
       realtimeSessionId = sessionResponse.id;
     } catch (realtimeError) {
       console.error('[voice] Realtime session creation failed:', realtimeError.message);
+      console.error('[voice] Realtime error status:', realtimeError.status);
+      console.error('[voice] Realtime error full:', JSON.stringify(realtimeError, null, 2));
+
       // Roll back the interview doc so it doesn't count against their credit
       await Interview.findByIdAndDelete(interview._id);
-      // Also undo the credit decrement
       const User = (await import('../models/User.js')).default;
       await User.findByIdAndUpdate(req.user.id, {
         $inc: { 'usage.interviewsUsedThisCycle': -1 },
       });
 
+      // Map OpenAI error codes to helpful messages
+      let userMessage = 'Could not start voice session. Please try again.';
+      if (realtimeError.status === 401) {
+        userMessage = 'OpenAI authentication failed. Please contact support.';
+      } else if (realtimeError.status === 429) {
+        userMessage = 'AI service is busy. Please wait a moment and try again.';
+      } else if (realtimeError.status === 404) {
+        userMessage = 'Voice interview model not available. Please contact support.';
+      } else if (realtimeError.message?.includes('realtime')) {
+        userMessage = 'Realtime API not accessible. Your OpenAI plan may not include Realtime access.';
+      }
+
       return res.status(503).json({
         success: false,
-        message: 'Could not start voice session. Please check your connection and try again.',
-        error: process.env.NODE_ENV !== 'production' ? realtimeError.message : undefined,
+        message: userMessage,
+        // Always include error detail so you can debug from the client console
+        error: realtimeError.message,
+        errorStatus: realtimeError.status,
       });
     }
 
