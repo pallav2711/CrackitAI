@@ -9,10 +9,6 @@ import Register from './pages/Register';
 import Dashboard from './pages/Dashboard';
 import ResumeBuilder from './pages/ResumeBuilder';
 import ResumeList from './pages/ResumeList';
-import MockInterview from './pages/MockInterview';
-import InterviewTaking from './pages/InterviewTaking';
-import InterviewResults from './pages/InterviewResults';
-
 import Analytics from './pages/Analytics';
 import UnifiedAnalytics from './pages/UnifiedAnalytics';
 import Leaderboard from './pages/Leaderboard';
@@ -61,10 +57,6 @@ function App() {
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/resumes" element={<ProtectedRoute><ResumeList /></ProtectedRoute>} />
         <Route path="/resume-builder" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
-        <Route path="/mock-interview" element={<ProtectedRoute><MockInterview /></ProtectedRoute>} />
-        <Route path="/interview/:id" element={<ProtectedRoute><InterviewTaking /></ProtectedRoute>} />
-        <Route path="/interview-results/:id" element={<ProtectedRoute><InterviewResults /></ProtectedRoute>} />
-
         {/* Analytics & Reports - Redirected to Dashboard */}
         <Route path="/analytics" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute><RedirectToDashboard feature="Reports" /></ProtectedRoute>} />
