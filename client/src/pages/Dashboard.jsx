@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Mic, FileText, ClipboardList, Trophy,
+  Mic, FileText, Trophy,
   TrendingUp, Zap, ArrowRight,
-  Star, Clock, Target, Brain, Building2,
+  Star, Clock, Target,
 } from 'lucide-react';
 import DashboardLayout from '../components/dashboard/DashboardLayout';
 import useAuthStore from '../store/useAuthStore';
@@ -24,14 +24,6 @@ const ACTIONS = [
     label: 'Resume Scanner',
     desc: 'ATS score, gaps, and specific fixes',
     to: '/resumes',
-    accent: false,
-    badge: null,
-  },
-  {
-    icon: ClipboardList,
-    label: 'Mock Test',
-    desc: 'Aptitude, coding, verbal — AI generated',
-    to: '/mock-tests',
     accent: false,
     badge: null,
   },
@@ -375,38 +367,6 @@ const Dashboard = () => {
               </div>
             )}
           </div>
-        </div>
-
-        {/* ── Secondary actions row ──────────────────────────────────────── */}
-        <div className="grid sm:grid-cols-3 gap-3 md:gap-4">
-          {[
-            { icon: Brain,     label: 'AI Mentor',     desc: 'Get advice on your prep strategy',   to: '/ai-mentor',    color: 'bg-white' },
-            { icon: Building2, label: 'Company Prep',  desc: 'Research companies, plan your prep', to: '/ai-prep',      color: 'bg-white' },
-            { icon: TrendingUp,label: 'Mock Interview', desc: 'Text-based practice rounds',        to: '/mock-interview', color: 'bg-white' },
-          ].map(({ icon: Icon, label, desc, to, color }) => (
-            <Link
-              key={to}
-              to={to}
-              className={`${color} border-2 border-nb-black p-5 flex items-center gap-4 group hover:-translate-x-0.5 hover:-translate-y-0.5 transition-all duration-100`}
-              style={{ borderRadius: '8px', boxShadow: '3px 3px 0 #111111' }}
-            >
-              <div
-                className="w-9 h-9 bg-[#F5F1E8] border-2 border-nb-black flex items-center justify-center flex-shrink-0"
-                style={{ borderRadius: '5px' }}
-                aria-hidden="true"
-              >
-                <Icon className="w-4 h-4 text-nb-black" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-bold text-sm" style={{ fontFamily: 'var(--font-display)' }}>{label}</p>
-                <p className="text-xs text-nb-black/50 truncate">{desc}</p>
-              </div>
-              <ArrowRight
-                className="w-4 h-4 text-nb-black/30 group-hover:text-nb-black flex-shrink-0 transition-colors"
-                aria-hidden="true"
-              />
-            </Link>
-          ))}
         </div>
 
         {/* ── Leaderboard CTA ───────────────────────────────────────────── */}
