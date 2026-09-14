@@ -12,16 +12,7 @@ import ResumeList from './pages/ResumeList';
 import MockInterview from './pages/MockInterview';
 import InterviewTaking from './pages/InterviewTaking';
 import InterviewResults from './pages/InterviewResults';
-import TestInterview from './pages/TestInterview';
-import MockTests from './pages/MockTests';
-import TestTaking from './pages/TestTaking';
-import TestResults from './pages/TestResults';
-import TestHistory from './pages/TestHistory';
 
-import CompanyPrep from './pages/CompanyPrep';
-import AICompanyPrep from './pages/AICompanyPrep';
-import AIPrepPlanView from './pages/AIPrepPlanView';
-import AIMentor from './pages/AIMentor';
 import Analytics from './pages/Analytics';
 import UnifiedAnalytics from './pages/UnifiedAnalytics';
 import Leaderboard from './pages/Leaderboard';
@@ -71,19 +62,9 @@ function App() {
         <Route path="/resumes" element={<ProtectedRoute><ResumeList /></ProtectedRoute>} />
         <Route path="/resume-builder" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
         <Route path="/mock-interview" element={<ProtectedRoute><MockInterview /></ProtectedRoute>} />
-        <Route path="/test-interview" element={<ProtectedRoute><TestInterview /></ProtectedRoute>} />
         <Route path="/interview/:id" element={<ProtectedRoute><InterviewTaking /></ProtectedRoute>} />
         <Route path="/interview-results/:id" element={<ProtectedRoute><InterviewResults /></ProtectedRoute>} />
-        <Route path="/mock-tests" element={<ProtectedRoute><MockTests /></ProtectedRoute>} />
-        <Route path="/test/:id" element={<ProtectedRoute><TestTaking /></ProtectedRoute>} />
-        <Route path="/test-results/:attemptId" element={<ProtectedRoute><TestResults /></ProtectedRoute>} />
-        <Route path="/test-history" element={<ProtectedRoute><TestHistory /></ProtectedRoute>} />
 
-        <Route path="/company-prep" element={<ProtectedRoute><CompanyPrep /></ProtectedRoute>} />
-        <Route path="/ai-prep" element={<ProtectedRoute><AICompanyPrep /></ProtectedRoute>} />
-        <Route path="/ai-prep/plan/:id" element={<ProtectedRoute><AIPrepPlanView /></ProtectedRoute>} />
-        <Route path="/ai-mentor" element={<ProtectedRoute><AIMentor /></ProtectedRoute>} />
-        
         {/* Analytics & Reports - Redirected to Dashboard */}
         <Route path="/analytics" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute><RedirectToDashboard feature="Reports" /></ProtectedRoute>} />

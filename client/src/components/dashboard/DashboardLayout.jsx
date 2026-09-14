@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, FileText, MessageSquare, ClipboardList,
+  LayoutDashboard, FileText, MessageSquare,
   Mic, Menu, X, LogOut, Trophy, CreditCard, Settings,
-  ChevronRight, ShieldAlert, Zap, Brain, Building2,
+  ChevronRight, ShieldAlert, Zap,
 } from 'lucide-react';
 import Logo from '../common/Logo';
 import useAuthStore from '../../store/useAuthStore';
@@ -13,9 +13,6 @@ const BASE_NAV = [
   { icon: Mic,             label: 'Voice Interview', path: '/interview/setup', badge: 'NEW', badgeColor: 'yellow' },
   { icon: MessageSquare,   label: 'Mock Interview',  path: '/mock-interview' },
   { icon: FileText,        label: 'Resume Center',   path: '/resumes' },
-  { icon: ClipboardList,   label: 'Mock Tests',      path: '/mock-tests' },
-  { icon: Building2,       label: 'Company Prep',    path: '/ai-prep' },
-  { icon: Brain,           label: 'AI Mentor',       path: '/ai-mentor' },
   { icon: Trophy,          label: 'Leaderboard',     path: '/leaderboard' },
 ];
 
