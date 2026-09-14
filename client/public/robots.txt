@@ -1,0 +1,36 @@
+User-agent: *
+Allow: /
+Allow: /pricing
+Allow: /about-us
+Allow: /contact
+Allow: /faq
+Allow: /privacy-policy
+Allow: /terms-of-service
+Allow: /refund-policy
+Allow: /cookie-policy
+
+Disallow: /dashboard
+Disallow: /billing
+Disallow: /settings
+Disallow: /checkout
+Disallow: /login
+Disallow: /register
+Disallow: /interview/
+Disallow: /resume-builder
+Disallow: /resumes
+Disallow: /mock-interview
+Disallow: /mock-tests
+Disallow: /test/
+Disallow: /test-interview
+Disallow: /test-history
+Disallow: /ai-prep
+Disallow: /ai-mentor
+Disallow: /company-prep
+Disallow: /leaderboard
+Disallow: /analytics
+Disallow: /reports
+Disallow: /admin/
+Disallow: /payment/
+Disallow: /api/
+
+Sitemap: https://crackiitai.vercel.app/sitemap.xml
