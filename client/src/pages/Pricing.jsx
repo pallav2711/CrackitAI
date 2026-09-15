@@ -6,8 +6,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Check, X, Zap, Mic, FileText, Trophy, ArrowRight,
-  Shield, RefreshCw, CreditCard,
+  Check, X, Zap, FileText, Trophy, ArrowRight,
+  Shield, RefreshCw, CreditCard, Briefcase, HelpCircle,
 } from 'lucide-react';
 import Navbar from '../components/landing/Navbar';
 import Footer from '../components/landing/Footer';
@@ -26,14 +26,14 @@ const PLANS = [
     cta: 'Get started free',
     ctaVariant: 'ghost',
     features: [
-      { text: '1 voice interview / month',      ok: true },
-      { text: 'Up to 7 min per session',         ok: true },
-      { text: 'Unlimited resume scans',          ok: true },
-      { text: 'View-only leaderboard',           ok: true },
-      { text: 'Full leaderboard participation',  ok: false },
-      { text: 'Role-specific interview modes',   ok: false },
-      { text: 'Priority processing',             ok: false },
-      { text: 'Scan history',                    ok: false },
+      { text: '1 JD match per month',             ok: true  },
+      { text: '1 resume scan',                     ok: true  },
+      { text: '1 AI quiz (30 questions)',           ok: true  },
+      { text: 'ATS score & skill gap',             ok: true  },
+      { text: 'Cover letter generation',           ok: true  },
+      { text: 'Resume tailoring',                  ok: false },
+      { text: 'Unlimited scans',                   ok: false },
+      { text: 'Priority processing',               ok: false },
     ],
   },
   {
@@ -48,14 +48,14 @@ const PLANS = [
     ctaVariant: 'black',
     razorpayPlan: 'basic',
     features: [
-      { text: '5 voice interviews / month',      ok: true },
-      { text: 'Up to 10 min per session',        ok: true },
-      { text: 'Unlimited resume scans',          ok: true },
-      { text: 'Full leaderboard participation',  ok: true },
-      { text: 'Scan history',                    ok: true },
-      { text: 'Role-specific interview modes',   ok: false },
-      { text: 'Priority processing',             ok: false },
-      { text: 'College leaderboard filter',      ok: true },
+      { text: '5 JD matches per month',            ok: true  },
+      { text: 'Unlimited resume scans',            ok: true  },
+      { text: '5 AI quizzes',                      ok: true  },
+      { text: 'ATS score & skill gap',             ok: true  },
+      { text: 'Resume tailoring',                  ok: true  },
+      { text: 'Cover letter generation',           ok: true  },
+      { text: 'Priority processing',               ok: false },
+      { text: 'Prep plan generation',              ok: false },
     ],
   },
   {
@@ -70,14 +70,14 @@ const PLANS = [
     ctaVariant: 'black',
     razorpayPlan: 'pro',
     features: [
-      { text: '15 voice interviews / month',     ok: true },
-      { text: 'Up to 15 min per session',        ok: true },
-      { text: 'Unlimited resume scans',          ok: true },
-      { text: 'Full leaderboard participation',  ok: true },
-      { text: 'Role-specific interview modes',   ok: true },
-      { text: 'Priority processing',             ok: true },
-      { text: 'Scan history',                    ok: true },
-      { text: 'College leaderboard filter',      ok: true },
+      { text: '15 JD matches per month',           ok: true  },
+      { text: 'Unlimited resume scans',            ok: true  },
+      { text: 'Unlimited quizzes',                 ok: true  },
+      { text: 'Resume tailoring',                  ok: true  },
+      { text: 'Cover letter generation',           ok: true  },
+      { text: 'Prep plan generation',              ok: true  },
+      { text: 'Priority processing',               ok: true  },
+      { text: 'Readiness score & roadmap',         ok: true  },
     ],
   },
   {
@@ -92,22 +92,19 @@ const PLANS = [
     ctaVariant: 'yellow',
     razorpayPlan: 'annual_pro',
     features: [
-      { text: '15 voice interviews / month',     ok: true },
-      { text: 'Up to 15 min per session',        ok: true },
-      { text: 'Unlimited resume scans',          ok: true },
-      { text: 'All Pro features',                ok: true },
-      { text: 'Save ₹2,189 vs monthly',          ok: true },
-      { text: 'Priority support',                ok: true },
-      { text: 'Early access to new features',    ok: true },
-      { text: 'Founding user badge',             ok: true },
+      { text: '15 JD matches per month',           ok: true  },
+      { text: 'Unlimited everything',              ok: true  },
+      { text: 'All Pro features',                  ok: true  },
+      { text: 'Save ₹2,189 vs monthly',            ok: true  },
+      { text: 'Priority support',                  ok: true  },
+      { text: 'Early access to new features',      ok: true  },
     ],
   },
 ];
-
 const FAQ = [
   {
-    q: 'What counts as one voice interview?',
-    a: 'Each completed voice session, regardless of how many questions are answered, counts as one interview toward your monthly limit. Sessions ended early still count.',
+    q: 'What counts as one JD match?',
+    a: 'Each job application you create counts as one JD match. Within that workspace you can run ATS score, skill gap, tailoring, cover letter, and quiz as many times as you want.',
   },
   {
     q: 'Can I upgrade or downgrade my plan anytime?',
@@ -122,16 +119,20 @@ const FAQ = [
     a: 'No. All payment data is handled entirely by Razorpay, a PCI-DSS compliant payment gateway. We only store a payment ID for reference — never your card or UPI details.',
   },
   {
-    q: 'What happens when I use up my monthly interviews?',
-    a: 'You\'ll see an error when you try to start a session. Your counter resets on your billing cycle date. You can upgrade at any time to get more sessions immediately.',
+    q: 'What happens when I use up my monthly JD matches?',
+    a: 'You can still access your existing workspaces and retake quizzes. Your counter resets on your billing cycle date. You can upgrade at any time to get more matches immediately.',
   },
   {
-    q: 'Do unused interviews roll over to the next month?',
-    a: 'No. Interview credits reset every billing cycle and do not roll over. This keeps our AI costs predictable so we can maintain pricing.',
+    q: 'Will the AI fabricate skills in my tailored resume?',
+    a: 'Never. The AI only improves your existing content and highlights relevant experience. If a required skill is missing from your profile, it flags it as a warning — it never adds skills you don\'t have.',
+  },
+  {
+    q: 'Can I retake the quiz multiple times?',
+    a: 'Yes. You can retake your quiz as many times as you want from your job workspace. Each attempt overwrites the previous score, so you can track improvement.',
   },
   {
     q: 'Is there a free trial for paid plans?',
-    a: 'We offer 1 free voice interview on the free plan — that\'s your trial. We also offer a 7-day money-back guarantee on all paid plans, so there\'s no risk.',
+    a: 'The free plan is your trial — get a full JD match, ATS score, skill gap, cover letter, and quiz at no cost. Paid plans include a 7-day money-back guarantee.',
   },
   {
     q: 'Can my college get bulk access for students?',
@@ -330,9 +331,9 @@ export default function Pricing() {
           </h2>
           <div className="grid sm:grid-cols-3 gap-5">
             {[
-              { icon: Mic,      title: 'Real voice interviews', desc: 'Every session is a live WebRTC conversation with an AI interviewer — not a chatbot, not a quiz. OpenAI Realtime API, gpt-4o-realtime-preview. Each session costs us real compute.' },
-              { icon: FileText, title: 'AI resume scoring',     desc: 'One gpt-4o-mini call per scan — structured JSON output with scores across 7 dimensions, specific gaps, and suggested fixes. Not regex. Real analysis.' },
-              { icon: Trophy,   title: 'Live leaderboard',      desc: 'Weekly-resetting competitive rankings with college and role filters. Anti-gaming built in — only quality completed sessions earn points.' },
+              { icon: Briefcase, title: 'AI JD matching',       desc: 'One gpt-4o-mini call analyses your resume against the JD semantically — not just keyword counting. You get a score, skill gap, and recommendations in one shot.' },
+              { icon: FileText,  title: 'Resume tailoring',     desc: 'AI rewrites your bullet points and summary for the specific JD. Honesty guaranteed — missing skills are flagged, never fabricated.' },
+              { icon: HelpCircle, title: 'AI interview quiz',   desc: '30–40 MCQ questions generated from the JD — covering technical, HR, and role-specific topics. Stored per job workspace, retake anytime.' },
             ].map(({ icon: Icon, title, desc }) => (
               <div
                 key={title}
@@ -446,14 +447,14 @@ export default function Pricing() {
             Start for free today.
           </h2>
           <p className="text-sm font-medium text-nb-black/55">
-            One free voice interview. No card required. Upgrade whenever you're ready.
+            Free plan — no card required. Get your first ATS match, quiz, and cover letter today.
           </p>
           <Link
-            to={isAuthenticated ? '/interview/setup' : '/register'}
+            to={isAuthenticated ? '/jobs' : '/register'}
             className="btn btn-black btn-lg inline-flex"
           >
             <Zap className="w-5 h-5" aria-hidden="true" />
-            {isAuthenticated ? 'Start interview' : 'Create free account'}
+            {isAuthenticated ? 'Match a job' : 'Create free account'}
           </Link>
         </div>
       </section>

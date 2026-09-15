@@ -12,7 +12,7 @@ const Navbar = () => {
   const { isAuthenticated }     = useAuthStore();
 
   const links = [
-    { to: '/#features', label: 'Product' },
+    { to: '/#features', label: 'Features' },
     { to: '/pricing',   label: 'Pricing'  },
     { to: '/about-us',  label: 'About'    },
     { to: '/contact',   label: 'Contact'  },

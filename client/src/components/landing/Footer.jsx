@@ -15,7 +15,9 @@ const Footer = () => {
     {
       title: 'Product',
       links: [
-        { label: 'Voice interviews', to: '/register' },
+        { label: 'JD Matcher',       to: '/register' },
+        { label: 'Resume Builder',   to: '/register' },
+        { label: 'Interview Quiz',   to: '/register' },
         { label: 'Pricing',          to: '/pricing'  },
         { label: 'About us',         to: '/about-us' },
         { label: 'Contact',          to: '/contact'  },
@@ -36,7 +38,7 @@ const Footer = () => {
       {/* Top accent bar */}
       <div className="bg-nb-yellow border-b-3 border-nb-black px-4 py-3">
         <p className="max-w-6xl mx-auto text-xs font-black uppercase tracking-widest text-nb-black">
-          {BRAND_NAME} — Practice interviews. Strengthen your resume. Get hired.
+          {BRAND_NAME} — From resume to job-ready in minutes.
         </p>
       </div>
 
@@ -98,7 +100,7 @@ const Footer = () => {
               Get started
             </p>
             <p className="text-sm text-white/60 leading-relaxed">
-              Free plan includes 1 voice interview per month. No card required.
+              Free plan — get your first ATS match, resume tailoring, and quiz. No card required.
             </p>
             <Link
               to="/register"
