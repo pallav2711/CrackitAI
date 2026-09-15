@@ -14,6 +14,7 @@ import {
 import {
   startVoiceSession,
   processTurn,
+  streamTTS,
   endVoiceSession,
 } from '../controllers/voiceInterviewController.js';
 import { protect } from '../middleware/auth.js';
@@ -36,8 +37,9 @@ router.use(protect);
 
 // ── Voice interview routes ──────────────────────────────────────────────────
 router.post('/voice/start', startVoiceSession);
-router.post('/voice/turn', audioUpload.single('audio'), aiCallLimit, processTurn);
-router.post('/voice/end', endVoiceSession);
+router.post('/voice/turn',  audioUpload.single('audio'), aiCallLimit, processTurn);
+router.get('/voice/tts',    streamTTS);   // streams audio/mpeg directly
+router.post('/voice/end',   endVoiceSession);
 
 // ── Text interview routes ───────────────────────────────────────────────────
 // Create new interview — enforce monthly interview credit cap
