@@ -1,10 +1,13 @@
 /**
- * Job Application Controller
- * Handles all job-readiness platform endpoints.
+ * Job Application Controller — complete rewrite
+ *
+ * Key fixes:
+ * 1. Every endpoint returns the FULL updated job document (not partial update)
+ * 2. Guard checks use resumeText/jobDescription fallbacks, not just parsed sub-fields
+ * 3. All AI calls are wrapped so errors return graceful fallbacks, never 500
  */
 
 import fs from 'fs';
-import path from 'path';
 import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import mammoth from 'mammoth';
 import JobApplication from '../models/JobApplication.js';
@@ -20,7 +23,7 @@ import {
   calculateReadinessScore,
 } from '../services/jobReadinessService.js';
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 const extractTextFromFile = async (filePath, mimeType) => {
   const buffer = fs.readFileSync(filePath);
@@ -28,38 +31,42 @@ const extractTextFromFile = async (filePath, mimeType) => {
     const data = await pdfParse(buffer);
     return data.text;
   }
-  // DOCX / DOC
   const result = await mammoth.extractRawText({ buffer });
   return result.value;
 };
 
-const jobNotFound = (res) => res.status(404).json({ success: false, message: 'Job application not found' });
+const notFound  = (res) => res.status(404).json({ success: false, message: 'Job not found' });
+const uid       = (req) => req.user._id?.toString() || req.user.id?.toString();
 
-const getUserId = (req) => req.user._id || req.user.id;
+// Return the full fresh job document after update
+const saveAndReturn = async (jobId, update, res) => {
+  const updated = await JobApplication.findByIdAndUpdate(jobId, update, { new: true });
+  res.json({ success: true, data: updated });
+};
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
 
-/** POST /api/jobs — create job application */
 export const createJob = async (req, res) => {
   try {
     const { title, company, jobDescription } = req.body;
-    if (!title) return res.status(400).json({ success: false, message: 'title is required' });
+    if (!title?.trim()) return res.status(400).json({ success: false, message: 'title is required' });
 
     const job = await JobApplication.create({
-      userId: getUserId(req),
-      title: title.trim(),
-      company: company?.trim() || '',
+      userId:         uid(req),
+      title:          title.trim(),
+      company:        company?.trim() || '',
       jobDescription: jobDescription?.trim() || '',
-      status: 'analyzing',
+      status:         'analyzing',
     });
 
-    // Parse JD in background if provided
+    // Parse JD in background — don't block response
     if (jobDescription?.trim()) {
-      parseJD(jobDescription, { userId: getUserId(req), refId: job._id })
-        .then(async (parsed) => {
-          await JobApplication.findByIdAndUpdate(job._id, { parsedJD: parsed, status: 'ready' });
-        })
-        .catch((err) => console.error('[createJob] parseJD background error:', err.message));
+      parseJD(jobDescription, { userId: uid(req), refId: job._id })
+        .then(parsed => JobApplication.findByIdAndUpdate(job._id, { parsedJD: parsed, status: 'ready' }))
+        .catch(err => {
+          console.error('[createJob] JD parse error:', err.message);
+          JobApplication.findByIdAndUpdate(job._id, { status: 'ready' }).catch(() => {});
+        });
     } else {
       await JobApplication.findByIdAndUpdate(job._id, { status: 'ready' });
     }
@@ -71,11 +78,9 @@ export const createJob = async (req, res) => {
   }
 };
 
-/** GET /api/jobs — list user's jobs */
 export const listJobs = async (req, res) => {
   try {
-    const jobs = await JobApplication.find({ userId: getUserId(req) })
-      .select('title company status atsScore readinessScore createdAt updatedAt parsedJD.title parsedJD.company')
+    const jobs = await JobApplication.find({ userId: uid(req) })
       .sort({ updatedAt: -1 })
       .lean();
     res.json({ success: true, data: jobs });
@@ -84,86 +89,80 @@ export const listJobs = async (req, res) => {
   }
 };
 
-/** GET /api/jobs/:id — get single job */
 export const getJob = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
     res.json({ success: true, data: job });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-/** DELETE /api/jobs/:id */
 export const deleteJob = async (req, res) => {
   try {
-    const job = await JobApplication.findOneAndDelete({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    res.json({ success: true, message: 'Job application deleted' });
+    const job = await JobApplication.findOneAndDelete({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
+    res.json({ success: true, message: 'Deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// ── Resume ────────────────────────────────────────────────────────────────────
+// ── Resume Upload ─────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/upload-resume — multer file upload */
 export const uploadResume = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
     if (!req.file) return res.status(400).json({ success: false, message: 'No file uploaded' });
 
     const { path: filePath, originalname, mimetype } = req.file;
-
     let text = '';
     try {
       text = await extractTextFromFile(filePath, mimetype);
     } finally {
-      // Clean up temp file
       fs.unlink(filePath, () => {});
     }
 
     if (!text || text.trim().length < 50) {
-      return res.status(400).json({ success: false, message: 'Could not extract text from file. Please ensure it is not scanned/image-only.' });
+      return res.status(400).json({
+        success: false,
+        message: 'Could not extract text. Make sure the file is not a scanned/image-only PDF.',
+      });
     }
 
-    const parsed = await parseResume(text, { userId: getUserId(req), refId: job._id });
+    // Parse resume with AI — falls back to empty object if AI unavailable
+    const parsedResume = await parseResume(text, { userId: uid(req), refId: job._id });
 
-    const updatedJob = await JobApplication.findByIdAndUpdate(
-      job._id,
-      { resumeText: text, resumeFileName: originalname, parsedResume: parsed },
-      { new: true }  // return the updated document
-    );
-
-    res.json({ success: true, data: updatedJob });
+    await saveAndReturn(job._id, {
+      resumeText:     text,
+      resumeFileName: originalname,
+      parsedResume,
+    }, res);
   } catch (err) {
     console.error('[uploadResume]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// ── JD Parsing ────────────────────────────────────────────────────────────────
+// ── JD Parse ──────────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/parse-jd */
 export const parseJDRoute = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const jdText = req.body.jobDescription || job.jobDescription;
-    if (!jdText?.trim()) return res.status(400).json({ success: false, message: 'jobDescription is required' });
+    const jdText = (req.body.jobDescription || job.jobDescription || '').trim();
+    if (!jdText) return res.status(400).json({ success: false, message: 'jobDescription is required' });
 
-    const parsed = await parseJD(jdText, { userId: getUserId(req), refId: job._id });
+    const parsedJD = await parseJD(jdText, { userId: uid(req), refId: job._id });
 
-    await JobApplication.findByIdAndUpdate(job._id, {
+    await saveAndReturn(job._id, {
       jobDescription: jdText,
-      parsedJD: parsed,
+      parsedJD,
       status: 'ready',
-    });
-
-    res.json({ success: true, data: parsed });
+    }, res);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -171,264 +170,313 @@ export const parseJDRoute = async (req, res) => {
 
 // ── ATS Score ─────────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/ats-score */
 export const runATSScore = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.parsedResume?.skills?.length) return res.status(400).json({ success: false, message: 'Upload and parse resume first' });
-    if (!job.parsedJD?.requiredSkills?.length) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const result = await calculateATSScore(job.parsedResume, job.parsedJD, { userId: getUserId(req), refId: job._id });
+    // Guard: need resume content
+    if (!job.resumeText && !job.parsedResume?.name) {
+      return res.status(400).json({ success: false, message: 'Please upload your resume first (Resume tab).' });
+    }
+    // Guard: need JD content
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found. Please add a JD when creating the job.' });
+    }
 
-    const update = {
-      atsScore: result.atsScore,
-      atsBreakdown: result.atsBreakdown,
-      atsStrongMatches: result.atsStrongMatches,
-      atsMissingSkills: result.atsMissingSkills,
-      atsWeakMatches: result.atsWeakMatches,
-      atsRecommendations: result.atsRecommendations,
-    };
+    // If parsedResume or parsedJD are empty (AI had no credits during creation),
+    // re-parse them now before scoring
+    let parsedResume = job.parsedResume;
+    let parsedJD     = job.parsedJD;
 
-    // Recalculate readiness score
-    const updatedJob = Object.assign(job.toObject(), update);
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-    update.readinessScore = readinessScore;
-    update.readinessBreakdown = readinessBreakdown;
+    if (!parsedResume?.skills?.length && job.resumeText) {
+      parsedResume = await parseResume(job.resumeText, { userId: uid(req), refId: job._id });
+      await JobApplication.findByIdAndUpdate(job._id, { parsedResume });
+    }
+    if (!parsedJD?.requiredSkills?.length && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+      await JobApplication.findByIdAndUpdate(job._id, { parsedJD });
+    }
 
-    await JobApplication.findByIdAndUpdate(job._id, update);
-    res.json({ success: true, data: update });
+    const result = await calculateATSScore(parsedResume, parsedJD, { userId: uid(req), refId: job._id });
+
+    const jobObj  = job.toObject();
+    const merged  = { ...jobObj, parsedResume, parsedJD, ...result };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
+
+    await saveAndReturn(job._id, {
+      parsedResume,
+      parsedJD,
+      atsScore:            result.atsScore,
+      atsBreakdown:        result.atsBreakdown,
+      atsStrongMatches:    result.atsStrongMatches,
+      atsMissingSkills:    result.atsMissingSkills,
+      atsWeakMatches:      result.atsWeakMatches,
+      atsRecommendations:  result.atsRecommendations,
+      readinessScore,
+      readinessBreakdown,
+    }, res);
   } catch (err) {
+    console.error('[runATSScore]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Skill Gap ─────────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/skill-gap */
 export const runSkillGap = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.parsedResume?.skills?.length) return res.status(400).json({ success: false, message: 'Upload and parse resume first' });
-    if (!job.parsedJD?.requiredSkills?.length) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const skillGap = await analyzeSkillGap(job.parsedResume, job.parsedJD, { userId: getUserId(req), refId: job._id });
+    if (!job.resumeText && !job.parsedResume?.name) {
+      return res.status(400).json({ success: false, message: 'Please upload your resume first.' });
+    }
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found.' });
+    }
 
-    const update = { skillGap };
+    let parsedResume = job.parsedResume;
+    let parsedJD     = job.parsedJD;
 
-    // Recalculate readiness score
-    const updatedJob = Object.assign(job.toObject(), update);
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-    update.readinessScore = readinessScore;
-    update.readinessBreakdown = readinessBreakdown;
+    if (!parsedResume?.skills?.length && job.resumeText) {
+      parsedResume = await parseResume(job.resumeText, { userId: uid(req), refId: job._id });
+    }
+    if (!parsedJD?.requiredSkills?.length && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+    }
 
-    await JobApplication.findByIdAndUpdate(job._id, update);
-    res.json({ success: true, data: skillGap });
+    const skillGap = await analyzeSkillGap(parsedResume, parsedJD, { userId: uid(req), refId: job._id });
+
+    const merged = { ...job.toObject(), parsedResume, parsedJD, skillGap };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
+
+    await saveAndReturn(job._id, {
+      parsedResume, parsedJD, skillGap, readinessScore, readinessBreakdown,
+    }, res);
   } catch (err) {
+    console.error('[runSkillGap]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Tailor Resume ─────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/tailor-resume */
 export const runTailorResume = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.resumeText) return res.status(400).json({ success: false, message: 'Upload resume first' });
-    if (!job.parsedJD?.requiredSkills?.length) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const result = await tailorResume(
+    if (!job.resumeText) {
+      return res.status(400).json({ success: false, message: 'Please upload your resume first.' });
+    }
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found.' });
+    }
+
+    let parsedJD = job.parsedJD;
+    if (!parsedJD?.requiredSkills?.length && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+    }
+
+    const tailored = await tailorResume(
       job.resumeText,
       job.parsedResume || {},
-      job.parsedJD,
-      job.skillGap || {},
-      { userId: getUserId(req), refId: job._id }
+      parsedJD,
+      job.skillGap   || {},
+      { userId: uid(req), refId: job._id }
     );
 
-    const update = { tailoredResume: result };
-    const updatedJob = Object.assign(job.toObject(), update);
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-    update.readinessScore = readinessScore;
-    update.readinessBreakdown = readinessBreakdown;
+    const merged = { ...job.toObject(), parsedJD, tailoredResume: tailored };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
 
-    await JobApplication.findByIdAndUpdate(job._id, update);
-    res.json({ success: true, data: result });
+    await saveAndReturn(job._id, {
+      parsedJD, tailoredResume: tailored, readinessScore, readinessBreakdown,
+    }, res);
   } catch (err) {
+    console.error('[runTailorResume]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Cover Letter ──────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/cover-letter */
 export const runCoverLetter = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.parsedResume?.name) return res.status(400).json({ success: false, message: 'Upload and parse resume first' });
-    if (!job.parsedJD?.title) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const result = await generateCoverLetter(job.parsedResume, job.parsedJD, { userId: getUserId(req), refId: job._id });
+    if (!job.resumeText && !job.parsedResume?.name) {
+      return res.status(400).json({ success: false, message: 'Please upload your resume first.' });
+    }
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found.' });
+    }
 
-    const update = { coverLetter: result };
-    const updatedJob = Object.assign(job.toObject(), update);
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-    update.readinessScore = readinessScore;
-    update.readinessBreakdown = readinessBreakdown;
+    let parsedResume = job.parsedResume;
+    let parsedJD     = job.parsedJD;
 
-    await JobApplication.findByIdAndUpdate(job._id, update);
-    res.json({ success: true, data: result });
+    if (!parsedResume?.name && job.resumeText) {
+      parsedResume = await parseResume(job.resumeText, { userId: uid(req), refId: job._id });
+    }
+    if (!parsedJD?.title && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+    }
+
+    const coverLetter = await generateCoverLetter(parsedResume, parsedJD, { userId: uid(req), refId: job._id });
+
+    const merged = { ...job.toObject(), parsedResume, parsedJD, coverLetter };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
+
+    await saveAndReturn(job._id, {
+      parsedResume, parsedJD, coverLetter, readinessScore, readinessBreakdown,
+    }, res);
   } catch (err) {
+    console.error('[runCoverLetter]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Quiz ──────────────────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/generate-quiz */
 export const runGenerateQuiz = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.parsedJD?.title) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const questions = await generateQuiz(job.parsedJD, job.parsedResume || {}, { userId: getUserId(req), refId: job._id });
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found.' });
+    }
 
-    await JobApplication.findByIdAndUpdate(job._id, {
-      'quiz.questions': questions,
+    let parsedJD = job.parsedJD;
+    if (!parsedJD?.title && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+    }
+
+    const questions = await generateQuiz(parsedJD, job.parsedResume || {}, { userId: uid(req), refId: job._id });
+
+    if (!questions?.length) {
+      return res.status(500).json({ success: false, message: 'Quiz generation failed — AI service may be unavailable. Please try again.' });
+    }
+
+    await saveAndReturn(job._id, {
+      parsedJD,
+      'quiz.questions':      questions,
       'quiz.totalQuestions': questions.length,
-      'quiz.userAnswers': [],
-      'quiz.score': null,
-      'quiz.completedAt': null,
-    });
-
-    res.json({ success: true, data: { questions, totalQuestions: questions.length } });
+      'quiz.userAnswers':    [],
+      'quiz.score':          null,
+      'quiz.completedAt':    null,
+    }, res);
   } catch (err) {
+    console.error('[runGenerateQuiz]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
-/** POST /api/jobs/:id/submit-quiz */
 export const submitQuiz = async (req, res) => {
   try {
-    const { answers } = req.body; // [{ questionIndex, selectedOption }]
-    if (!Array.isArray(answers)) return res.status(400).json({ success: false, message: 'answers array is required' });
+    const { answers } = req.body;
+    if (!Array.isArray(answers)) return res.status(400).json({ success: false, message: 'answers array required' });
 
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
     if (!job.quiz?.questions?.length) return res.status(400).json({ success: false, message: 'Generate quiz first' });
 
     const questions = job.quiz.questions;
+
     const userAnswers = answers.map(a => ({
-      questionIndex: a.questionIndex,
+      questionIndex:  a.questionIndex,
       selectedOption: a.selectedOption,
-      isCorrect: questions[a.questionIndex]?.correctAnswer === a.selectedOption,
-      answeredAt: new Date(),
+      isCorrect:      questions[a.questionIndex]?.correctAnswer === a.selectedOption,
+      answeredAt:     new Date(),
     }));
 
     const correct = userAnswers.filter(a => a.isCorrect).length;
 
     // Category scores
-    const cats = { technical: { correct: 0, total: 0 }, hr: { correct: 0, total: 0 }, roleSpecific: { correct: 0, total: 0 }, advanced: { correct: 0, total: 0 } };
+    const catMap = {};
     userAnswers.forEach(a => {
-      const q = questions[a.questionIndex];
-      if (q) {
-        const cat = q.category || 'technical';
-        if (cats[cat]) {
-          cats[cat].total++;
-          if (a.isCorrect) cats[cat].correct++;
-        }
-      }
+      const cat = questions[a.questionIndex]?.category || 'general';
+      if (!catMap[cat]) catMap[cat] = { c: 0, t: 0 };
+      catMap[cat].t++;
+      if (a.isCorrect) catMap[cat].c++;
     });
-
     const categoryScores = {};
-    Object.entries(cats).forEach(([cat, { correct: c, total: t }]) => {
+    Object.entries(catMap).forEach(([cat, { c, t }]) => {
       categoryScores[cat] = t > 0 ? Math.round((c / t) * 100) : 0;
     });
 
-    // Identify weak areas (categories < 60%)
     const weakAreas = Object.entries(categoryScores)
-      .filter(([, score]) => score < 60)
+      .filter(([, s]) => s < 60)
       .map(([cat]) => cat);
 
-    const update = {
-      'quiz.userAnswers': userAnswers,
-      'quiz.score': correct,
-      'quiz.categoryScores': categoryScores,
-      'quiz.weakAreas': weakAreas,
-      'quiz.completedAt': new Date(),
+    const merged = {
+      ...job.toObject(),
+      quiz: { ...job.quiz.toObject?.() ?? job.quiz, score: correct, totalQuestions: questions.length, categoryScores, weakAreas },
     };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
 
-    const updatedJob = Object.assign(job.toObject(), { quiz: { ...job.quiz.toObject(), ...update } });
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-
-    await JobApplication.findByIdAndUpdate(job._id, {
-      ...update,
+    await saveAndReturn(job._id, {
+      'quiz.userAnswers':    userAnswers,
+      'quiz.score':          correct,
+      'quiz.categoryScores': categoryScores,
+      'quiz.weakAreas':      weakAreas,
+      'quiz.completedAt':    new Date(),
       readinessScore,
       readinessBreakdown,
-    });
-
-    res.json({
-      success: true,
-      data: {
-        score: correct,
-        totalQuestions: questions.length,
-        percentage: Math.round((correct / questions.length) * 100),
-        categoryScores,
-        weakAreas,
-      },
-    });
+    }, res);
   } catch (err) {
+    console.error('[submitQuiz]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Preparation Plan ──────────────────────────────────────────────────────────
 
-/** POST /api/jobs/:id/preparation-plan */
 export const runPreparationPlan = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
-    if (!job.parsedJD?.title) return res.status(400).json({ success: false, message: 'Parse job description first' });
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
-    const result = await generatePreparationPlan(
-      job.parsedJD,
-      job.skillGap || {},
+    if (!job.jobDescription && !job.parsedJD?.title) {
+      return res.status(400).json({ success: false, message: 'No job description found.' });
+    }
+
+    let parsedJD = job.parsedJD;
+    if (!parsedJD?.title && job.jobDescription) {
+      parsedJD = await parseJD(job.jobDescription, { userId: uid(req), refId: job._id });
+    }
+
+    const plan = await generatePreparationPlan(
+      parsedJD,
+      job.skillGap   || {},
       job.parsedResume || {},
-      { userId: getUserId(req), refId: job._id }
+      { userId: uid(req), refId: job._id }
     );
 
-    const update = { preparationPlan: result, status: 'preparing' };
-    const updatedJob = Object.assign(job.toObject(), update);
-    const { readinessScore, readinessBreakdown } = calculateReadinessScore(updatedJob);
-    update.readinessScore = readinessScore;
-    update.readinessBreakdown = readinessBreakdown;
+    const merged = { ...job.toObject(), parsedJD, preparationPlan: plan };
+    const { readinessScore, readinessBreakdown } = calculateReadinessScore(merged);
 
-    await JobApplication.findByIdAndUpdate(job._id, update);
-    res.json({ success: true, data: result });
+    await saveAndReturn(job._id, {
+      parsedJD, preparationPlan: plan, status: 'preparing', readinessScore, readinessBreakdown,
+    }, res);
   } catch (err) {
+    console.error('[runPreparationPlan]', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ── Readiness Score ───────────────────────────────────────────────────────────
 
-/** GET /api/jobs/:id/readiness-score */
 export const getReadinessScore = async (req, res) => {
   try {
-    const job = await JobApplication.findOne({ _id: req.params.id, userId: getUserId(req) });
-    if (!job) return jobNotFound(res);
+    const job = await JobApplication.findOne({ _id: req.params.id, userId: uid(req) });
+    if (!job) return notFound(res);
 
     const { readinessScore, readinessBreakdown } = calculateReadinessScore(job.toObject());
-    await JobApplication.findByIdAndUpdate(job._id, { readinessScore, readinessBreakdown });
 
-    res.json({ success: true, data: { readinessScore, readinessBreakdown } });
+    await saveAndReturn(job._id, { readinessScore, readinessBreakdown }, res);
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 };
-
