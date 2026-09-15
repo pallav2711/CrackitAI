@@ -2,66 +2,50 @@ import axios from 'axios';
 import useAuthStore from '../store/authStore';
 import { cache } from '../utils/performance';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_URL = import.meta.env.VITE_API_URL || 'https://crackitai-dwhs.onrender.com/api';
 
-// Request deduplication map
+// Expose for non-axios callers (e.g. TTS fetch)
+export const getApiUrl = () => API_URL;
+export const getAuthToken = () => useAuthStore.getState().token || '';
+
 const pendingRequests = new Map();
 
 const api = axios.create({
   baseURL: API_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  timeout: 30000, // 30 second timeout
+  headers: { 'Content-Type': 'application/json' },
+  timeout: 30000,
 });
 
-// Create request key for deduplication
-const createRequestKey = (config) => {
-  return `${config.method}:${config.url}:${JSON.stringify(config.params)}:${JSON.stringify(config.data)}`;
-};
+const createRequestKey = (config) =>
+  `${config.method}:${config.url}:${JSON.stringify(config.params)}`;
 
-// Request interceptor with caching and deduplication
+// ── Request interceptor ───────────────────────────────────────────────────────
 api.interceptors.request.use(
   (config) => {
+    // Inject auth token
     const token = useAuthStore.getState().token;
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+    if (token) config.headers.Authorization = `Bearer ${token}`;
 
-    // Add compression support
-    config.headers['Accept-Encoding'] = 'gzip, deflate, br';
+    // NOTE: Do NOT set Accept-Encoding — browsers manage this header themselves
+    // and will throw "Refused to set unsafe header" if you try.
 
-    // Request deduplication for GET requests
+    // Deduplicate GET requests
     if (config.method === 'get') {
-      const requestKey = createRequestKey(config);
-      
-      // Check cache first
-      const cachedResponse = cache.get(requestKey);
-      if (cachedResponse) {
+      const key = createRequestKey(config);
+
+      const cached = cache.get(key);
+      if (cached) {
         return Promise.resolve({
-          ...config,
-          data: cachedResponse,
-          status: 200,
-          statusText: 'OK',
-          headers: {},
-          config,
-          fromCache: true
+          ...config, data: cached, status: 200,
+          statusText: 'OK', headers: {}, config, fromCache: true,
         });
       }
 
-      // Check if request is already pending
-      if (pendingRequests.has(requestKey)) {
-        return pendingRequests.get(requestKey);
-      }
+      if (pendingRequests.has(key)) return pendingRequests.get(key);
 
-      // Store pending request
-      const requestPromise = axios(config);
-      pendingRequests.set(requestKey, requestPromise);
-      
-      // Clean up after request completes
-      requestPromise.finally(() => {
-        pendingRequests.delete(requestKey);
-      });
+      const req = axios(config);
+      pendingRequests.set(key, req);
+      req.finally(() => pendingRequests.delete(key));
     }
 
     return config;
@@ -69,75 +53,53 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor with caching and retry logic
+// ── Response interceptor ──────────────────────────────────────────────────────
 api.interceptors.response.use(
   (response) => {
-    // Don't process cached responses
-    if (response.fromCache) {
-      return response;
-    }
+    if (response.fromCache) return response;
 
-    // Cache GET responses
     if (response.config.method === 'get' && response.status === 200) {
-      const requestKey = createRequestKey(response.config);
-      cache.set(requestKey, response.data);
+      cache.set(createRequestKey(response.config), response.data);
     }
-
     return response;
   },
   async (error) => {
     const config = error.config;
-    
-    // Check if it's an HTML response (backend sleeping/waking up)
-    const isHtmlError = error.response?.headers?.['content-type']?.includes('text/html') ||
-                        error.message?.includes('DOCTYPE') ||
-                        error.message?.includes('Unexpected token');
-    
-    // Retry logic for backend wake-up
-    if (!config._retry && isHtmlError) {
+
+    // Retry on backend cold-start HTML response (Render free tier)
+    const isHtmlError =
+      error.response?.headers?.['content-type']?.includes('text/html') ||
+      error.message?.includes('DOCTYPE');
+
+    if (config && !config._retry && isHtmlError) {
       config._retry = true;
       config._retryCount = (config._retryCount || 0) + 1;
-      
-      // Retry up to 3 times with exponential backoff
       if (config._retryCount <= 3) {
-        console.log(`Backend waking up, retrying... (${config._retryCount}/3)`);
-        await new Promise(resolve => setTimeout(resolve, 2000 * config._retryCount));
+        await new Promise((r) => setTimeout(r, 2000 * config._retryCount));
         return api(config);
       }
     }
-    
-    // Handle 401 errors
+
+    // Auto-logout on 401
     if (error.response?.status === 401) {
       useAuthStore.getState().logout();
       window.location.href = '/login';
     }
-    
+
     return Promise.reject(error);
   }
 );
 
-// Batch request utility
 export const batchRequests = async (requests, batchSize = 5) => {
   const results = [];
-  
   for (let i = 0; i < requests.length; i += batchSize) {
     const batch = requests.slice(i, i + batchSize);
-    const batchResults = await Promise.allSettled(batch.map(req => api(req)));
-    results.push(...batchResults);
+    results.push(...(await Promise.allSettled(batch.map((r) => api(r)))));
   }
-  
   return results;
 };
 
-// Prefetch utility
-export const prefetch = (url, config = {}) => {
-  return api.get(url, { ...config, priority: 'low' });
-};
-
-// Clear cache utility
-export const clearApiCache = () => {
-  cache.clear();
-  pendingRequests.clear();
-};
+export const prefetch = (url, config = {}) => api.get(url, { ...config, priority: 'low' });
+export const clearApiCache = () => { cache.clear(); pendingRequests.clear(); };
 
 export default api;

@@ -90,13 +90,18 @@ app.use(morgan('dev'));
 // Rate limiting (more lenient in development)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 100 : 1000, // Higher limit for development
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
-  // Skip rate limiting for health checks
+  max: process.env.NODE_ENV === 'production' ? 200 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Skip health checks AND all voice interview routes (they have their own credit gate)
   skip: (req) => {
-    return req.path === '/health' || req.path === '/api/health' || req.path === '/';
-  }
+    return (
+      req.path === '/health' ||
+      req.path === '/api/health' ||
+      req.path === '/' ||
+      req.path.startsWith('/api/interview/voice/')
+    );
+  },
 });
 app.use('/api', limiter);
 // Routes

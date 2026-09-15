@@ -4,6 +4,12 @@ import { resolve } from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  // Ensure production API URL is always available even without .env on Vercel
+  define: {
+    __VITE_API_URL__: JSON.stringify(
+      process.env.VITE_API_URL || 'https://crackitai-dwhs.onrender.com/api'
+    ),
+  },
   server: {
     port: 3000,
     proxy: {
@@ -27,13 +33,14 @@ export default defineConfig({
         }
       }
     },
-    // Enable minification and compression
+    // Minification
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: true, // Remove console.logs in production
-        drop_debugger: true
-      }
+        drop_debugger: true,
+        // Keep console.log so errors are visible in production browser DevTools
+        drop_console: false,
+      },
     },
     // Optimize chunk size
     chunkSizeWarningLimit: 1000,

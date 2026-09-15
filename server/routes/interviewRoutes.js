@@ -36,9 +36,11 @@ const audioUpload = multer({
 router.use(protect);
 
 // ── Voice interview routes ──────────────────────────────────────────────────
+// Credit is already consumed at /voice/start — no per-turn rate limiting needed.
+// Whisper + GPT calls per turn are bounded by the session time cap.
 router.post('/voice/start', startVoiceSession);
-router.post('/voice/turn',  audioUpload.single('audio'), aiCallLimit, processTurn);
-router.get('/voice/tts',    streamTTS);   // streams audio/mpeg directly
+router.post('/voice/turn',  audioUpload.single('audio'), processTurn);
+router.get('/voice/tts',    streamTTS);
 router.post('/voice/end',   endVoiceSession);
 
 // ── Text interview routes ───────────────────────────────────────────────────
