@@ -42,7 +42,7 @@ export const PAGE_META = {
   },
   dashboard: {
     title:       `Dashboard — ${BRAND_NAME}`,
-    description: 'Your job-readiness dashboard. Track ATS scores, skill gaps, quiz performance, and readiness across every job you're targeting.',
+    description: 'Your job-readiness dashboard. Track ATS scores, skill gaps, quiz performance, and readiness across every job you are targeting.',
   },
   jobs: {
     title:       `My Jobs — ${BRAND_NAME}`,
