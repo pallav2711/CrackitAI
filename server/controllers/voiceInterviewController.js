@@ -135,6 +135,8 @@ export const processTurn = async (req, res) => {
     const { interviewId } = req.body;
     const audioFile = req.file;
 
+    console.log(`[voice] turn — interviewId:${interviewId} audioSize:${audioFile?.buffer?.length || 0} isOpener:${!audioFile || audioFile.buffer?.length < 2000}`);
+
     if (!interviewId) return res.status(400).json({ success: false, message: 'Missing interviewId.' });
 
     const session = sessions.get(interviewId);
@@ -145,7 +147,9 @@ export const processTurn = async (req, res) => {
     // ── Whisper STT ───────────────────────────────────────────────────────────
     let userText = '';
 
-    if (audioFile && audioFile.buffer && audioFile.buffer.length > 1000) {
+    const isOpener = !audioFile || audioFile.buffer?.length < 2000;
+
+    if (!isOpener) {
       // Real audio — transcribe with Whisper
       const ext = audioFile.mimetype?.includes('mp4') ? 'mp4'
                 : audioFile.mimetype?.includes('wav') ? 'wav'
@@ -162,13 +166,18 @@ export const processTurn = async (req, res) => {
         });
         userText = (typeof tx === 'string' ? tx : tx.text || '').trim();
       } catch (sttErr) {
-        console.error('[voice] Whisper error:', sttErr.message);
-        return res.status(502).json({ success: false, message: 'Could not transcribe audio. Please speak clearly.' });
+        console.error('[voice] Whisper error:', sttErr.message, 'status:', sttErr.status);
+        // Don't crash the turn — return a friendly error
+        return res.status(502).json({
+          success: false,
+          message: `Speech transcription failed: ${sttErr.message}. Please try again.`,
+          errorCode: sttErr.status,
+        });
       } finally {
         if (tempFile && fs.existsSync(tempFile)) { fs.unlinkSync(tempFile); tempFile = null; }
       }
     }
-    // else: empty/silent audio → treat as opener (no user text, just get first AI message)
+    // else: opener (silent/tiny audio) — skip STT, go straight to GPT for first message
 
     // Skip if too short (noise / silence)
     if (userText && userText.split(/\s+/).length < 2) {
