@@ -4,11 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   FileText, User, Briefcase, GraduationCap, Code,
   FolderGit2, Award, Save, Eye, Download, ArrowLeft,
-  ArrowRight, CheckCircle, AlertCircle
+  ArrowRight, CheckCircle, Loader2,
 } from 'lucide-react';
 import DashboardLayout from '../components/dashboard/DashboardLayout';
 import { resumeService } from '../services/resumeService';
+import { downloadResumePDF } from '../components/resume/ResumePDF';
 import useAuthStore from '../store/authStore';
+import toast from 'react-hot-toast';
 
 // Import step components
 import PersonalInfoStep from '../components/resume/PersonalInfoStep';
@@ -51,9 +53,12 @@ const ResumeBuilder = () => {
     certifications: []
   });
 
-  const [saving, setSaving] = useState(false);
+  const [saving,      setSaving]      = useState(false);
+  const [loadingData, setLoadingData] = useState(!!resumeId);
   const [showPreview, setShowPreview] = useState(false);
-  const [atsScore, setAtsScore] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+  const [atsScore,    setAtsScore]    = useState(null);
+  const [currentResumeId, setCurrentResumeId] = useState(resumeId);
 
   const steps = [
     { id: 'personal', label: 'Personal Info', icon: User, component: PersonalInfoStep },
@@ -72,44 +77,61 @@ const ResumeBuilder = () => {
   }, [resumeId]);
 
   const loadResume = async () => {
+    setLoadingData(true);
     try {
       const data = await resumeService.getResume(resumeId);
       setResumeData(data);
-      if (data.atsScore) {
-        setAtsScore(data.atsScore);
-      }
-    } catch (error) {
-      console.error('Failed to load resume:', error);
+      if (data.atsScore) setAtsScore(data.atsScore);
+    } catch (err) {
+      toast.error(`Failed to load resume: ${err.message}`);
+    } finally {
+      setLoadingData(false);
     }
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      if (resumeId) {
-        await resumeService.updateResume(resumeId, resumeData);
+      let savedId = currentResumeId;
+      if (currentResumeId) {
+        await resumeService.updateResume(currentResumeId, resumeData);
       } else {
         const newResume = await resumeService.createResume(resumeData);
-        navigate(`/resume-builder?id=${newResume._id}`, { replace: true });
+        savedId = newResume._id;
+        setCurrentResumeId(savedId);
+        navigate(`/resume-builder?id=${savedId}`, { replace: true });
       }
-      
-      // Get updated ATS score
-      if (resumeId) {
-        const analysis = await resumeService.getATSAnalysis(resumeId);
-        setAtsScore(analysis.score);
+      // Fetch ATS analysis for both new and existing resumes
+      if (savedId) {
+        try {
+          const analysis = await resumeService.getATSAnalysis(savedId);
+          setAtsScore(analysis.score);
+        } catch { /* ATS is non-critical */ }
       }
-    } catch (error) {
-      console.error('Failed to save resume:', error);
-      alert('Failed to save resume. Please try again.');
+      toast.success('Resume saved!');
+    } catch (err) {
+      toast.error(`Save failed: ${err.message}`);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleNext = () => {
+  const handleDownloadPDF = async () => {
+    setDownloading(true);
+    try {
+      await downloadResumePDF(resumeData);
+      toast.success('PDF downloaded!');
+    } catch (err) {
+      toast.error(`PDF generation failed: ${err.message}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleNext = async () => {
     if (currentStep < steps.length - 1) {
+      await handleSave(); // await so failures are visible
       setCurrentStep(currentStep + 1);
-      handleSave();
     }
   };
 
@@ -127,6 +149,14 @@ const ResumeBuilder = () => {
   };
 
   const CurrentStepComponent = steps[currentStep].component;
+
+  if (loadingData) return (
+    <DashboardLayout>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-nb-black/30" />
+      </div>
+    </DashboardLayout>
+  );
 
   return (
     <DashboardLayout>
@@ -175,12 +205,20 @@ const ResumeBuilder = () => {
                 {showPreview ? 'Hide' : 'Preview'}
               </button>
               <button
+                onClick={handleDownloadPDF}
+                disabled={downloading}
+                className="btn btn-secondary flex items-center gap-2"
+              >
+                {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                PDF
+              </button>
+              <button
                 onClick={handleSave}
                 disabled={saving}
                 className="btn btn-primary flex items-center gap-2 group disabled:opacity-50"
               >
-                <Save className={`w-4 h-4 ${saving ? 'animate-spin' : 'group-hover:scale-110'} transition-transform`} />
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 group-hover:scale-110 transition-transform" />}
+                {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
           </div>

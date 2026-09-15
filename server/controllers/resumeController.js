@@ -66,11 +66,14 @@ export const updateResume = async (req, res) => {
       return res.status(404).json({ error: 'Resume not found' });
     }
     
-    // Update fields
-    Object.keys(req.body).forEach(key => {
-      if (key !== 'userId' && key !== '_id') {
-        resume[key] = req.body[key];
-      }
+    // Safe field allowlist — prevents mass assignment of protected fields
+    const ALLOWED_FIELDS = [
+      'title', 'template', 'personalInfo', 'experience', 'education',
+      'skills', 'projects', 'certifications', 'awards', 'publications',
+      'keywords', 'isPublic',
+    ];
+    ALLOWED_FIELDS.forEach(key => {
+      if (req.body[key] !== undefined) resume[key] = req.body[key];
     });
     
     // Recalculate ATS score

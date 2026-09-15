@@ -24,8 +24,8 @@ import User from '../models/User.js';
 // Plan definitions — single source of truth used by this middleware AND subscription enforcement
 export const PLAN_LIMITS = {
   free: {
-    monthlyInterviews: 10,   // bumped for testing — set back to 1 for production
-    dailyAICalls: 10,
+    monthlyInterviews: 1,
+    dailyAICalls:      1,
     maxSessionMinutes: 7,
   },
   basic: {
