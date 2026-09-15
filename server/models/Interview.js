@@ -257,7 +257,13 @@ const InterviewSchema = new mongoose.Schema({
   language: {
     type: String,
     default: 'en'
-  }
+  },
+  // Persisted voice session state (messages + transcript as JSON string)
+  // Used to survive server restarts on Render free tier
+  voiceSession: {
+    type: String,
+    default: null,
+  },
 }, {
   timestamps: true
 });

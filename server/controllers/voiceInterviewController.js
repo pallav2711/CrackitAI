@@ -1,16 +1,14 @@
 /**
  * Voice Interview Controller — Whisper STT + GPT-4o-mini + TTS streaming
  *
- * Endpoints:
- *   POST /voice/start          → create Interview doc, return interviewId + cap
- *   POST /voice/turn           → audio blob → Whisper → GPT-4o-mini → returns JSON {transcript, response}
- *   GET  /voice/tts?text=...&interviewId=... → streams TTS audio as audio/mpeg (ChatGPT-style)
- *   POST /voice/end            → score transcript via existing pipeline
+ * Sessions are persisted in MongoDB (Interview.overallFeedback field as JSON)
+ * so server restarts (Render free tier) don't wipe in-memory state.
  *
- * Why two separate calls for turn + tts:
- *   - /voice/turn  returns text in ~2-4s (Whisper + GPT only)
- *   - /voice/tts   streams audio immediately — client can start playing before fully downloaded
- *   - This replicates the ChatGPT voice feel: text appears fast, audio streams in
+ * Endpoints:
+ *   POST /voice/start   → create Interview doc, init session
+ *   POST /voice/turn    → audio → Whisper → GPT → return text
+ *   GET  /voice/tts     → stream TTS audio as audio/mpeg
+ *   POST /voice/end     → score transcript via existing pipeline
  */
 
 import OpenAI from 'openai';
@@ -39,15 +37,27 @@ const SESSION_CAP_SECONDS = {
   annual: 15 * 60,
 };
 
-// ── In-memory session store ───────────────────────────────────────────────────
-// Key: interviewId → { messages, transcript, startTime }
-const sessions = new Map();
+// ── Session helpers (persisted to MongoDB) ────────────────────────────────────
+// We store { messages, transcript, sessionCapSeconds } as JSON in interview.voiceSession
+// This survives server restarts.
 
-// TTL cleanup every 30 min
-setInterval(() => {
-  const cutoff = Date.now() - 60 * 60 * 1000;
-  for (const [id, s] of sessions) if (s.startTime < cutoff) sessions.delete(id);
-}, 30 * 60 * 1000);
+async function loadSession(interviewId) {
+  const doc = await Interview.findById(interviewId).select('voiceSession status userId');
+  if (!doc || doc.status !== 'in-progress') return null;
+  try {
+    return doc.voiceSession ? JSON.parse(doc.voiceSession) : null;
+  } catch { return null; }
+}
+
+async function saveSession(interviewId, session) {
+  await Interview.findByIdAndUpdate(interviewId, {
+    voiceSession: JSON.stringify(session),
+  });
+}
+
+async function clearSession(interviewId) {
+  await Interview.findByIdAndUpdate(interviewId, { voiceSession: null });
+}
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 const buildSystemPrompt = ({ role, companyType, difficulty, interviewType }) => {
@@ -101,25 +111,35 @@ export const startVoiceSession = async (req, res) => {
       return res.status(403).json({ success: false, message: creditCheck.reason, code: 'INTERVIEW_LIMIT_EXCEEDED' });
     }
 
+    const systemPrompt = buildSystemPrompt({ role, companyType, difficulty, interviewType });
+
+    // Create Interview doc with session data persisted immediately
+    const session = {
+      messages:         [{ role: 'system', content: systemPrompt }],
+      transcript:       [],
+      sessionCapSeconds,
+    };
+
     const interview = await Interview.create({
-      userId: req.user.id,
-      type: interviewType || 'technical',
-      role: role || 'Software Engineer',
+      userId:    req.user.id,
+      type:      interviewType || 'technical',
+      role:      role || 'Software Engineer',
       difficulty: difficulty || 'medium',
-      mode: 'voice',
-      status: 'in-progress',
+      mode:      'voice',
+      status:    'in-progress',
       startTime: new Date(),
       questions: [],
+      voiceSession: JSON.stringify(session),
     });
 
-    const interviewId = interview._id.toString();
-    sessions.set(interviewId, {
-      messages: [{ role: 'system', content: buildSystemPrompt({ role, companyType, difficulty, interviewType }) }],
-      transcript: [],
-      startTime: Date.now(),
-    });
+    console.log(`[voice] started interviewId:${interview._id} plan:${plan} cap:${sessionCapSeconds}s`);
 
-    res.json({ success: true, interviewId, sessionCapSeconds, remainingInterviews: creditCheck.remaining });
+    res.json({
+      success: true,
+      interviewId: interview._id,
+      sessionCapSeconds,
+      remainingInterviews: creditCheck.remaining,
+    });
   } catch (err) {
     console.error('[voice] start error:', err);
     res.status(500).json({ success: false, message: err.message });
@@ -127,30 +147,38 @@ export const startVoiceSession = async (req, res) => {
 };
 
 // ─── POST /api/interview/voice/turn ──────────────────────────────────────────
-// Receives audio blob → Whisper STT → GPT-4o-mini → returns JSON
-// Client then calls GET /voice/tts to stream the audio separately
 export const processTurn = async (req, res) => {
   let tempFile = null;
   try {
     const { interviewId } = req.body;
     const audioFile = req.file;
 
-    console.log(`[voice] turn — interviewId:${interviewId} audioSize:${audioFile?.buffer?.length || 0} isOpener:${!audioFile || audioFile.buffer?.length < 2000}`);
+    if (!interviewId) {
+      return res.status(400).json({ success: false, message: 'Missing interviewId.' });
+    }
 
-    if (!interviewId) return res.status(400).json({ success: false, message: 'Missing interviewId.' });
+    const audioSize = audioFile?.buffer?.length || 0;
+    const isOpener  = audioSize < 2000;
+    console.log(`[voice] turn interviewId:${interviewId} audioSize:${audioSize} isOpener:${isOpener}`);
 
-    const session = sessions.get(interviewId);
-    if (!session) return res.status(404).json({ success: false, message: 'Session not found or expired. Please start a new interview.' });
+    // Load session from MongoDB (survives server restarts)
+    const session = await loadSession(interviewId);
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        message: 'Interview session not found. It may have expired — please start a new interview.',
+      });
+    }
 
     const client = getOpenAI();
+    if (!client) {
+      return res.status(503).json({ success: false, message: 'OpenAI not configured.' });
+    }
 
-    // ── Whisper STT ───────────────────────────────────────────────────────────
+    // ── Whisper STT (skip for opener) ─────────────────────────────────────────
     let userText = '';
 
-    const isOpener = !audioFile || audioFile.buffer?.length < 2000;
-
     if (!isOpener) {
-      // Real audio — transcribe with Whisper
       const ext = audioFile.mimetype?.includes('mp4') ? 'mp4'
                 : audioFile.mimetype?.includes('wav') ? 'wav'
                 : 'webm';
@@ -159,27 +187,25 @@ export const processTurn = async (req, res) => {
 
       try {
         const tx = await client.audio.transcriptions.create({
-          file: fs.createReadStream(tempFile),
-          model: 'whisper-1',
-          language: 'en',
+          file:            fs.createReadStream(tempFile),
+          model:           'whisper-1',
+          language:        'en',
           response_format: 'text',
         });
         userText = (typeof tx === 'string' ? tx : tx.text || '').trim();
+        console.log(`[voice] Whisper transcribed: "${userText.substring(0, 80)}"`);
       } catch (sttErr) {
-        console.error('[voice] Whisper error:', sttErr.message, 'status:', sttErr.status);
-        // Don't crash the turn — return a friendly error
+        console.error('[voice] Whisper error:', sttErr.status, sttErr.message);
         return res.status(502).json({
           success: false,
-          message: `Speech transcription failed: ${sttErr.message}. Please try again.`,
-          errorCode: sttErr.status,
+          message: `Transcription failed (${sttErr.status || 'unknown'}): ${sttErr.message}`,
         });
       } finally {
         if (tempFile && fs.existsSync(tempFile)) { fs.unlinkSync(tempFile); tempFile = null; }
       }
     }
-    // else: opener (silent/tiny audio) — skip STT, go straight to GPT for first message
 
-    // Skip if too short (noise / silence)
+    // Skip very short transcriptions (noise)
     if (userText && userText.split(/\s+/).length < 2) {
       return res.json({ success: true, skipped: true, transcript: '', response: '' });
     }
@@ -190,118 +216,108 @@ export const processTurn = async (req, res) => {
       session.transcript.push({ role: 'user', content: userText });
     }
 
-    // ── GPT-4o-mini response ──────────────────────────────────────────────────
+    // ── GPT-4o-mini ───────────────────────────────────────────────────────────
     let aiText = '';
     try {
       const chatRes = await client.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: session.messages,
+        model:       'gpt-4o-mini',
+        messages:    session.messages,
         temperature: 0.75,
-        max_tokens: 150,   // ~60 words spoken — keep it snappy
+        max_tokens:  150,
       });
       aiText = chatRes.choices[0].message.content?.trim() || '';
+      console.log(`[voice] GPT responded: "${aiText.substring(0, 80)}"`);
 
       logChatCall({
-        userId: req.user.id,
-        feature: 'answer-evaluation',
-        model: 'gpt-4o-mini',
-        usage: chatRes.usage,
-        refId: interviewId,
+        userId:   req.user.id,
+        feature:  'answer-evaluation',
+        model:    'gpt-4o-mini',
+        usage:    chatRes.usage,
+        refId:    interviewId,
         refModel: 'Interview',
       });
     } catch (chatErr) {
-      console.error('[voice] GPT error:', chatErr.message);
-      return res.status(502).json({ success: false, message: 'AI response failed. Please try again.' });
+      console.error('[voice] GPT error:', chatErr.status, chatErr.message);
+      return res.status(502).json({
+        success: false,
+        message: `AI response failed (${chatErr.status || 'unknown'}): ${chatErr.message}`,
+      });
     }
 
+    // ── Persist updated session ───────────────────────────────────────────────
     session.messages.push({ role: 'assistant', content: aiText });
     session.transcript.push({ role: 'assistant', content: aiText });
+    await saveSession(interviewId, session);
 
     const interviewEnded =
       aiText.toLowerCase().includes('thank you for your time') ||
       aiText.toLowerCase().includes("that's all the questions");
 
-    // Return text immediately — client streams audio separately via /voice/tts
     res.json({
       success: true,
       transcript: userText,
-      response: aiText,
+      response:   aiText,
       interviewEnded,
     });
   } catch (err) {
-    if (tempFile && fs.existsSync(tempFile)) { try { fs.unlinkSync(tempFile); } catch (_) {} }
-    console.error('[voice] turn error:', err);
+    if (tempFile) { try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch (_) {} }
+    console.error('[voice] turn unexpected error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 };
 
 // ─── GET /api/interview/voice/tts ─────────────────────────────────────────────
-// Streams TTS audio directly as audio/mpeg — ChatGPT-style streaming
-// Query params: text (required), interviewId (for auth guard)
 export const streamTTS = async (req, res) => {
   try {
-    const { text, interviewId } = req.query;
-
-    if (!text || text.trim().length === 0) {
+    const { text } = req.query;
+    if (!text?.trim()) {
       return res.status(400).json({ success: false, message: 'No text provided.' });
     }
 
-    // Verify session exists (basic auth guard — protect middleware already ran)
-    if (interviewId && !sessions.has(interviewId)) {
-      // Session may have ended — still allow TTS for the final message
+    const client = getOpenAI();
+    if (!client) {
+      return res.status(503).json({ success: false, message: 'OpenAI not configured.' });
     }
 
-    const client = getOpenAI();
-
-    // Set streaming headers before the first byte
     res.setHeader('Content-Type', 'audio/mpeg');
     res.setHeader('Transfer-Encoding', 'chunked');
     res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('X-Content-Type-Options', 'nosniff');
 
-    // OpenAI TTS — pipe the response stream directly to client
     const ttsRes = await client.audio.speech.create({
-      model: 'tts-1',       // tts-1 = fast (lower latency), tts-1-hd = higher quality
-      voice: 'alloy',       // alloy: neutral, professional
-      input: text.trim().substring(0, 4096), // TTS max input
+      model:           'tts-1',
+      voice:           'alloy',
+      input:           text.trim().substring(0, 4096),
       response_format: 'mp3',
-      speed: 1.0,
+      speed:           1.0,
     });
 
-    // ttsRes.body is a Web Streams ReadableStream — pipe to Express response
-    const nodeStream = ttsRes.body;
-    if (nodeStream && typeof nodeStream.pipe === 'function') {
-      // Node.js stream
-      nodeStream.pipe(res);
-      nodeStream.on('error', (err) => {
-        console.error('[voice] TTS stream error:', err.message);
-        if (!res.headersSent) res.status(502).end();
-        else res.end();
-      });
-    } else if (nodeStream) {
-      // Web Streams API (newer openai SDK versions)
-      const reader = nodeStream.getReader();
-      const pump = async () => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) { res.end(); break; }
-            const ok = res.write(Buffer.from(value));
-            if (!ok) await new Promise(r => res.once('drain', r));
-          }
-        } catch (e) {
-          console.error('[voice] TTS pump error:', e.message);
-          res.end();
-        }
-      };
-      pump();
-    } else {
+    const body = ttsRes.body;
+    if (!body) {
       // Fallback: arrayBuffer
       const buf = Buffer.from(await ttsRes.arrayBuffer());
-      res.end(buf);
+      return res.end(buf);
+    }
+
+    if (typeof body.pipe === 'function') {
+      // Node stream
+      body.pipe(res);
+      body.on('error', () => res.end());
+    } else {
+      // Web ReadableStream (openai SDK v4+)
+      const reader = body.getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const ok = res.write(Buffer.from(value));
+          if (!ok) await new Promise(r => res.once('drain', r));
+        }
+      } finally {
+        res.end();
+      }
     }
   } catch (err) {
-    console.error('[voice] TTS error:', err);
+    console.error('[voice] TTS error:', err.status, err.message);
     if (!res.headersSent) res.status(502).json({ success: false, message: 'TTS failed.' });
     else res.end();
   }
@@ -313,7 +329,7 @@ export const endVoiceSession = async (req, res) => {
     const { interviewId, durationSeconds = 0 } = req.body;
 
     const interview = await Interview.findOne({
-      _id: interviewId,
+      _id:    interviewId,
       userId: req.user.id,
       status: 'in-progress',
     });
@@ -322,10 +338,14 @@ export const endVoiceSession = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Session not found or already completed.' });
     }
 
-    const session = sessions.get(interviewId);
-    const transcript = session?.transcript || [];
-    sessions.delete(interviewId);
+    // Load transcript from persisted session
+    let transcript = [];
+    try {
+      const session = interview.voiceSession ? JSON.parse(interview.voiceSession) : null;
+      transcript = session?.transcript || [];
+    } catch { transcript = []; }
 
+    await clearSession(interviewId);
     logVoiceSession({ userId: req.user.id, audioMinutes: durationSeconds / 60, refId: interview._id });
 
     // Extract Q&A pairs
@@ -341,7 +361,6 @@ export const endVoiceSession = async (req, res) => {
     }
 
     const meetsMinimumThreshold = durationSeconds >= 120 && qaPairs.length >= 2;
-
     const { evaluateAnswerWithAI } = await import('../services/aiQuestionService.js');
 
     const evaluatedQuestions = await Promise.all(
@@ -349,17 +368,22 @@ export const endVoiceSession = async (req, res) => {
         try {
           const ev = await evaluateAnswerWithAI({
             question, answer,
-            type: interview.type, role: interview.role,
+            type:             interview.type,
+            role:             interview.role,
             expectedKeywords: [],
-            experience: interview.experience || 'fresher',
-            difficulty: interview.difficulty || 'medium',
-            userId: req.user.id, refId: interview._id,
+            experience:       interview.experience || 'fresher',
+            difficulty:       interview.difficulty || 'medium',
+            userId:           req.user.id,
+            refId:            interview._id,
           });
           return {
             question, userAnswer: answer,
-            score: ev.score || 0, feedback: ev.feedback || '',
-            strengths: ev.strengths || [], improvements: ev.improvements || [],
-            keywordAnalysis: ev.keywordAnalysis || {}, answeredAt: new Date(),
+            score:           ev.score || 0,
+            feedback:        ev.feedback || '',
+            strengths:       ev.strengths || [],
+            improvements:    ev.improvements || [],
+            keywordAnalysis: ev.keywordAnalysis || {},
+            answeredAt:      new Date(),
           };
         } catch {
           return { question, userAnswer: answer, score: 0, feedback: 'Evaluation unavailable.', strengths: [], improvements: [], answeredAt: new Date() };
@@ -377,7 +401,8 @@ export const endVoiceSession = async (req, res) => {
         interview: { type: interview.type, role: interview.role, experience: interview.experience },
         questions: evaluatedQuestions,
         averageScore: overallScore,
-        userId: req.user.id, refId: interview._id,
+        userId: req.user.id,
+        refId:  interview._id,
       });
     } catch (e) { console.error('[voice] feedback error:', e.message); }
 
@@ -385,15 +410,15 @@ export const endVoiceSession = async (req, res) => {
     const pointsAwarded = meetsMinimumThreshold
       ? Math.min(Math.round(overallScore * diffMul), 200) : 0;
 
-    interview.status = 'completed';
-    interview.endTime = new Date();
-    interview.actualDuration = durationSeconds;
-    interview.questions = evaluatedQuestions;
-    interview.overallScore = overallScore;
-    interview.overallFeedback = feedbackResult?.feedback || '';
-    interview.strengths = feedbackResult?.strengths || [];
+    interview.status              = 'completed';
+    interview.endTime             = new Date();
+    interview.actualDuration      = durationSeconds;
+    interview.questions           = evaluatedQuestions;
+    interview.overallScore        = overallScore;
+    interview.overallFeedback     = feedbackResult?.feedback || '';
+    interview.strengths           = feedbackResult?.strengths || [];
     interview.areasForImprovement = feedbackResult?.improvements || [];
-    interview.recommendations = feedbackResult?.recommendations || [];
+    interview.recommendations     = feedbackResult?.recommendations || [];
     if (feedbackResult?.overallAssessment) interview.overallAssessment = feedbackResult.overallAssessment;
     if (feedbackResult?.nextSteps) interview.nextSteps = feedbackResult.nextSteps;
     await interview.save();
@@ -401,19 +426,25 @@ export const endVoiceSession = async (req, res) => {
     const User = (await import('../models/User.js')).default;
     await User.findByIdAndUpdate(req.user.id, {
       $inc: {
-        'stats.interviewsTaken': 1, 'stats.interviewsCompleted': 1,
-        'stats.totalPoints': pointsAwarded,
-        'leaderboard.totalPoints': pointsAwarded, 'leaderboard.weeklyPoints': pointsAwarded,
+        'stats.interviewsTaken':    1,
+        'stats.interviewsCompleted': 1,
+        'stats.totalPoints':        pointsAwarded,
+        'leaderboard.totalPoints':  pointsAwarded,
+        'leaderboard.weeklyPoints': pointsAwarded,
         'leaderboard.pointsAwarded': pointsAwarded,
       },
     });
 
     res.json({
-      success: true, interviewId: interview._id, overallScore, pointsAwarded,
-      meetsMinimumThreshold, questionsEvaluated: evaluatedQuestions.length,
-      overallFeedback: feedbackResult?.feedback || '',
-      strengths: feedbackResult?.strengths || [],
-      improvements: feedbackResult?.improvements || [],
+      success:              true,
+      interviewId:          interview._id,
+      overallScore,
+      pointsAwarded,
+      meetsMinimumThreshold,
+      questionsEvaluated:   evaluatedQuestions.length,
+      overallFeedback:      feedbackResult?.feedback || '',
+      strengths:            feedbackResult?.strengths || [],
+      improvements:         feedbackResult?.improvements || [],
     });
   } catch (err) {
     console.error('[voice] end error:', err);
