@@ -2,36 +2,39 @@ import { Routes, Route } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { Analytics as VercelAnalytics } from '@vercel/analytics/react';
 
-// Pages
+// Pages — public
 import LandingPage from './pages/LandingPage';
 import Login from './pages/Login';
 import Register from './pages/Register';
-import Dashboard from './pages/Dashboard';
-import ResumeBuilder from './pages/ResumeBuilder';
-import ResumeList from './pages/ResumeList';
-import Analytics from './pages/Analytics';
-import UnifiedAnalytics from './pages/UnifiedAnalytics';
-import Leaderboard from './pages/Leaderboard';
-import Reports from './pages/Reports';
-import RedirectToDashboard from './components/common/RedirectToDashboard';
 import Pricing from './pages/Pricing';
-import Billing from './pages/Billing';
 import Checkout from './pages/Checkout';
 import PaymentSuccess from './pages/PaymentSuccess';
 import PaymentFailed from './pages/PaymentFailed';
-import InterviewSetup from './pages/InterviewSetup';
-import VoiceInterviewSession from './pages/VoiceInterviewSession';
-import InterviewResults from './pages/InterviewResults';
-import Settings from './pages/Settings';
 import PrivacyPolicy from './pages/legal/PrivacyPolicy';
 import TermsOfService from './pages/legal/TermsOfService';
 import RefundPolicy from './pages/legal/RefundPolicy';
 import AboutUs from './pages/AboutUs';
 import Contact from './pages/Contact';
+
+// Pages — protected
+import Dashboard from './pages/Dashboard';
+import JobDashboard from './pages/JobDashboard';
+import JobWorkspace from './pages/JobWorkspace';
+import QuizPage from './pages/QuizPage';
+import OnboardingFlow from './pages/OnboardingFlow';
+import ResumeBuilder from './pages/ResumeBuilder';
+import ResumeList from './pages/ResumeList';
+import Leaderboard from './pages/Leaderboard';
+import Billing from './pages/Billing';
+import InterviewSetup from './pages/InterviewSetup';
+import VoiceInterviewSession from './pages/VoiceInterviewSession';
+import InterviewResults from './pages/InterviewResults';
+import Settings from './pages/Settings';
 import AdminDashboard from './pages/AdminDashboard';
 
 // Components
 import ProtectedRoute from './components/common/ProtectedRoute';
+import RedirectToDashboard from './components/common/RedirectToDashboard';
 import NotFound from './pages/NotFound';
 
 function App() {
@@ -40,7 +43,7 @@ function App() {
       <Toaster position="top-right" />
       <VercelAnalytics />
       <Routes>
-        {/* Public Routes */}
+        {/* ── Public ────────────────────────────────────────────────────── */}
         <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
@@ -54,15 +57,20 @@ function App() {
         <Route path="/about-us" element={<AboutUs />} />
         <Route path="/contact" element={<Contact />} />
 
-        {/* Protected Routes */}
+        {/* ── Core protected ─────────────────────────────────────────── */}
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+
+        {/* Job Readiness Platform */}
+        <Route path="/jobs" element={<ProtectedRoute><JobDashboard /></ProtectedRoute>} />
+        <Route path="/workspace/:id" element={<ProtectedRoute><JobWorkspace /></ProtectedRoute>} />
+        <Route path="/quiz/:jobId" element={<ProtectedRoute><QuizPage /></ProtectedRoute>} />
+        <Route path="/onboarding" element={<ProtectedRoute><OnboardingFlow /></ProtectedRoute>} />
+
+        {/* Resume */}
         <Route path="/resumes" element={<ProtectedRoute><ResumeList /></ProtectedRoute>} />
         <Route path="/resume-builder" element={<ProtectedRoute><ResumeBuilder /></ProtectedRoute>} />
-        {/* Analytics & Reports - Redirected to Dashboard */}
-        <Route path="/analytics" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
-        <Route path="/reports" element={<ProtectedRoute><RedirectToDashboard feature="Reports" /></ProtectedRoute>} />
-        
-        {/* Keep leaderboard as separate page */}
+
+        {/* Leaderboard */}
         <Route path="/leaderboard" element={<ProtectedRoute><Leaderboard /></ProtectedRoute>} />
 
         {/* Billing */}
@@ -78,10 +86,12 @@ function App() {
 
         {/* Admin */}
         <Route path="/admin/payments" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
-        
-        {/* Legacy routes for backward compatibility */}
-        <Route path="/analytics-detailed" element={<ProtectedRoute><UnifiedAnalytics /></ProtectedRoute>} />
-        <Route path="/analytics-old" element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+
+        {/* Legacy redirects */}
+        <Route path="/analytics" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
+        <Route path="/reports" element={<ProtectedRoute><RedirectToDashboard feature="Reports" /></ProtectedRoute>} />
+        <Route path="/analytics-detailed" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
+        <Route path="/analytics-old" element={<ProtectedRoute><RedirectToDashboard feature="Analytics" /></ProtectedRoute>} />
 
         {/* 404 */}
         <Route path="*" element={<NotFound />} />

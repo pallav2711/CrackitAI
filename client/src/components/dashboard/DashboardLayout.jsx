@@ -2,17 +2,18 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, FileText,
-  Mic, Menu, X, LogOut, Trophy, CreditCard, Settings,
+  Mic, Menu, X, LogOut, Briefcase, Trophy, CreditCard, Settings,
   ChevronRight, ShieldAlert, Zap,
 } from 'lucide-react';
 import Logo from '../common/Logo';
 import useAuthStore from '../../store/useAuthStore';
 
 const BASE_NAV = [
-  { icon: LayoutDashboard, label: 'Dashboard',      path: '/dashboard' },
-  { icon: Mic,             label: 'Voice Interview', path: '/interview/setup', badge: 'NEW', badgeColor: 'yellow' },
-  { icon: FileText,        label: 'Resume Center',   path: '/resumes' },
-  { icon: Trophy,          label: 'Leaderboard',     path: '/leaderboard' },
+  { icon: LayoutDashboard, label: 'Dashboard',   path: '/dashboard' },
+  { icon: Briefcase,       label: 'My Jobs',     path: '/jobs', badge: 'NEW', badgeColor: 'yellow' },
+  { icon: FileText,        label: 'Resume Center', path: '/resumes' },
+  { icon: Mic,             label: 'Voice Interview', path: '/interview/setup' },
+  { icon: Trophy,          label: 'Leaderboard', path: '/leaderboard' },
 ];
 
 const BOTTOM_NAV = [
@@ -138,12 +139,12 @@ const DashboardLayout = ({ children }) => {
 
           {/* Quick start button */}
           <Link
-            to="/interview/setup"
+            to="/jobs"
             className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-nb-yellow text-nb-black font-bold text-xs border-2 border-nb-yellow transition-all hover:bg-[#FFC300]"
             style={{ borderRadius: '4px', boxShadow: '2px 2px 0 rgba(255,217,61,0.5)' }}
           >
             <Zap className="w-3.5 h-3.5" aria-hidden="true" />
-            <span className="hidden md:inline">New Interview</span>
+            <span className="hidden md:inline">Track Job</span>
           </Link>
 
           {/* Logout */}
@@ -181,15 +182,15 @@ const DashboardLayout = ({ children }) => {
           {BOTTOM_NAV.map(item => <NavLink key={item.path} item={item} />)}
         </div>
 
-        {/* Start interview CTA strip */}
+        {/* Quick CTA strip */}
         <div className="border-t-3 border-nb-black bg-nb-yellow">
           <Link
-            to="/interview/setup"
+            to="/jobs"
             onClick={() => setOpen(false)}
             className="flex items-center gap-2 px-5 py-4 font-black text-sm uppercase tracking-wide text-nb-black hover:bg-[#FFC300] transition-colors"
           >
-            <Mic className="w-4 h-4" aria-hidden="true" />
-            <span>Start Interview</span>
+            <Briefcase className="w-4 h-4" aria-hidden="true" />
+            <span>Track a Job</span>
             <ChevronRight className="w-4 h-4 ml-auto" aria-hidden="true" />
           </Link>
         </div>
