@@ -131,13 +131,13 @@ export const uploadResume = async (req, res) => {
 
     const parsed = await parseResume(text, { userId: getUserId(req), refId: job._id });
 
-    await JobApplication.findByIdAndUpdate(job._id, {
-      resumeText: text,
-      resumeFileName: originalname,
-      parsedResume: parsed,
-    });
+    const updatedJob = await JobApplication.findByIdAndUpdate(
+      job._id,
+      { resumeText: text, resumeFileName: originalname, parsedResume: parsed },
+      { new: true }  // return the updated document
+    );
 
-    res.json({ success: true, data: { parsedResume: parsed, resumeFileName: originalname } });
+    res.json({ success: true, data: updatedJob });
   } catch (err) {
     console.error('[uploadResume]', err);
     res.status(500).json({ success: false, message: err.message });
@@ -431,3 +431,4 @@ export const getReadinessScore = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+

@@ -224,9 +224,12 @@ function ATSTab({ job, onJobUpdate }) {
   if (!job.atsScore && job.atsScore !== 0) return (
     <div className="max-w-md space-y-4">
       <p className="text-sm text-nb-black/60">Upload your resume first, then calculate your ATS match score against the job description.</p>
-      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText}>
+      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText && !job.parsedResume?.name}>
         <Target className="w-4 h-4" /> Calculate ATS Score
       </ActionBtn>
+      {!job.resumeText && !job.parsedResume?.name && (
+        <p className="text-xs text-nb-red font-bold">← Go to the Resume tab and upload your resume first.</p>
+      )}
     </div>
   );
 
@@ -378,7 +381,10 @@ function TailorTab({ job, onJobUpdate }) {
         <p className="text-xs font-black mb-1">Honesty guarantee</p>
         <p className="text-xs text-nb-black/70">The AI improves your existing content for this JD. It will never fabricate skills, experience, companies, or certifications you don't have.</p>
       </div>
-      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText}><FileText className="w-4 h-4" /> Tailor Resume</ActionBtn>
+      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText && !job.parsedResume?.name}><FileText className="w-4 h-4" /> Tailor Resume</ActionBtn>
+      {!job.resumeText && !job.parsedResume?.name && (
+        <p className="text-xs text-nb-red font-bold">← Upload your resume in the Resume tab first.</p>
+      )}
     </div>
   );
 
@@ -432,7 +438,10 @@ function CoverLetterTab({ job, onJobUpdate }) {
   if (!cl?.text) return (
     <div className="max-w-md space-y-4">
       <p className="text-sm text-nb-black/60">Generate a professional, job-specific cover letter from your resume and the JD.</p>
-      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText}><BookOpen className="w-4 h-4" /> Generate Cover Letter</ActionBtn>
+      <ActionBtn onClick={run} loading={loading} disabled={!job.resumeText && !job.parsedResume?.name}><BookOpen className="w-4 h-4" /> Generate Cover Letter</ActionBtn>
+      {!job.resumeText && !job.parsedResume?.name && (
+        <p className="text-xs text-nb-red font-bold">← Upload your resume in the Resume tab first.</p>
+      )}
     </div>
   );
 
